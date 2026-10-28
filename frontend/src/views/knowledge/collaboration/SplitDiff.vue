@@ -6,13 +6,13 @@
       @scroll.passive="syncFromLeft"
     >
       <div
-        v-for="(row, index) in leftRows"
+        v-for="(row, index) in displayRows"
         :key="index"
         class="cv-split-row"
-        :class="rowClass(row.type)"
+        :class="rowClass(row.left?.type)"
       >
-        <span class="cv-split-no">{{ row.no }}</span>
-        <span class="cv-split-text">{{ row.text }}</span>
+        <span class="cv-split-no" :class="{ 'is-del-no': row.left?.type === 'del' }">{{ row.left?.no ?? '' }}</span>
+        <span class="cv-split-text">{{ row.left?.text ?? ' ' }}</span>
       </div>
     </div>
     <div
@@ -21,13 +21,13 @@
       @scroll.passive="syncFromRight"
     >
       <div
-        v-for="(row, index) in rightRows"
+        v-for="(row, index) in displayRows"
         :key="index"
         class="cv-split-row"
-        :class="rowClass(row.type)"
+        :class="rowClass(row.right?.type)"
       >
-        <span class="cv-split-no" :class="{ 'is-add-no': row.type === 'add' }">{{ row.no }}</span>
-        <span class="cv-split-text">{{ row.text }}</span>
+        <span class="cv-split-no" :class="{ 'is-add-no': row.right?.type === 'add' }">{{ row.right?.no ?? '' }}</span>
+        <span class="cv-split-text">{{ row.right?.text ?? ' ' }}</span>
       </div>
     </div>
   </div>
@@ -35,7 +35,7 @@
 
 <script setup lang="ts">
 import { computed, ref } from 'vue'
-import { diffLines } from './diff'
+import { diffLines, type DiffRow } from './diff'
 
 const props = withDefaults(defineProps<{
   before: string
@@ -48,17 +48,53 @@ let syncing = false
 
 const result = computed(() => diffLines(props.before, props.after))
 
-const leftRows = computed(() => result.value.rows.map((row) => ({
-  type: row.type,
-  no: row.type === 'add' ? '' : String(row.oldNo ?? ''),
-  text: row.type === 'add' ? ' ' : (row.text || ' '),
-})))
+interface SplitCell {
+  type: 'ctx' | 'add' | 'del'
+  no: string
+  text: string
+}
 
-const rightRows = computed(() => result.value.rows.map((row) => ({
-  type: row.type,
-  no: row.type === 'del' ? '' : row.type === 'add' ? `+${row.newNo ?? ''}` : String(row.oldNo ?? ''),
-  text: row.type === 'del' ? ' ' : (row.text || ' '),
-})))
+interface SplitRow {
+  left: SplitCell | null
+  right: SplitCell | null
+}
+
+// A replacement is emitted by the LCS as a delete row followed by an add row.
+// Pairing them onto one display row keeps old and new lines side by side, so
+// a modified line reads as one aligned change instead of two staggered rows.
+const displayRows = computed<SplitRow[]>(() => {
+  const rows = result.value.rows
+  const out: SplitRow[] = []
+  let index = 0
+  while (index < rows.length) {
+    const row = rows[index]
+    if (row.type === 'ctx') {
+      out.push({
+        left: { type: 'ctx', no: String(row.oldNo ?? ''), text: row.text || ' ' },
+        right: { type: 'ctx', no: String(row.newNo ?? ''), text: row.text || ' ' },
+      })
+      index++
+      continue
+    }
+    const deletions: DiffRow[] = []
+    const additions: DiffRow[] = []
+    while (index < rows.length && rows[index].type !== 'ctx') {
+      if (rows[index].type === 'del') deletions.push(rows[index])
+      else additions.push(rows[index])
+      index++
+    }
+    const count = Math.max(deletions.length, additions.length)
+    for (let offset = 0; offset < count; offset++) {
+      const deletion = deletions[offset]
+      const addition = additions[offset]
+      out.push({
+        left: deletion ? { type: 'del', no: String(deletion.oldNo ?? ''), text: deletion.text || ' ' } : null,
+        right: addition ? { type: 'add', no: `+${addition.newNo ?? ''}`, text: addition.text || ' ' } : null,
+      })
+    }
+  }
+  return out
+})
 
 function syncFromLeft() {
   syncVertical(leftPane.value, rightPane.value)
@@ -77,7 +113,7 @@ function syncVertical(source: HTMLElement | null, target: HTMLElement | null) {
   requestAnimationFrame(() => { syncing = false })
 }
 
-function rowClass(type: 'ctx' | 'add' | 'del') {
+function rowClass(type?: 'ctx' | 'add' | 'del') {
   if (type === 'add') return 'is-add'
   if (type === 'del') return 'is-del'
   return 'is-ctx'
@@ -168,7 +204,8 @@ function rowClass(type: 'ctx' | 'add' | 'del') {
   background: #ffebe9;
 }
 
-.cv-split-row.is-del .cv-split-no {
+.cv-split-row.is-del .cv-split-no,
+.cv-split-no.is-del-no {
   color: #cf222e;
 }
 
