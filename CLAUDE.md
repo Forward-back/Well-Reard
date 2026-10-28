@@ -36,7 +36,7 @@ WellRead 是公司内部单租户、本地部署的企业知识库系统，根�
 - **密钥不落库/不落文档**：`.env`、模型 Key、测试口令不提交；平台 API Key 只显示掩码。
 - **RAG 数据不进入 git/镜像**：不把 `Data/`、`models/`、`faiss_index.bin` 加进 git；本地数据放 `data/rag/`，不要删除。
 - **文档来源**：产品/需求文档只从 app 业务侧与当前产品文档获取；`rag/test/`、`data/rag/Data` 是独立测试数据，不能当作业务需求或演示数据。
-- **只推个人仓库**：origin 固定为 `https://github.com/Forward-back/Well-Reard`；不要添加或推送 Tencent/WeKnora 上游；提交前确认不含 `.env`、密钥、`data/rag/`、`backups/`。
+- **只推个人仓库**：origin = `git@github.com:Forward-back/Well-Reard.git`（SSH；网页 `https://github.com/Forward-back/Well-Reard`）；不要添加或推送 Tencent/WeKnora 上游；提交前确认不含 `.env`、密钥、`data/rag/`、`backups/`。
 - **高风险动作先确认**：删除/移动大量文件、重置数据库、重建数据卷、轮换凭据、修改部署与 CI，先向用户说明影响。
 
 ## 4. 常用命令
