@@ -393,6 +393,10 @@ type ReadingDocumentSection struct {
 	Title   string `json:"title,omitempty"`
 	Heading string `json:"heading,omitempty"`
 	Read    bool   `json:"read"`
+	// Start/End are UTF-16 offsets into ReadingDocument.Content, matching
+	// JavaScript string indices used by the left-pane highlighter.
+	Start int `json:"start"`
+	End   int `json:"end"`
 }
 
 // ReadingDocument is one selected document rendered as full text.

@@ -116,6 +116,31 @@ func (s *readingRunService) ensureReadingModelSupportsThinking(
 	return nil
 }
 
+// ensureReadingRunModel applies a lazy model migration to structured runs
+// created before the tenant switched to a thinking-capable reading model. The
+// run keeps working with the tenant's current reading model instead of dying
+// on the mandatory-thinking check.
+func (s *readingRunService) ensureReadingRunModel(
+	ctx context.Context, run *types.ReadingRun,
+) error {
+	if err := s.ensureReadingModelSupportsThinking(ctx, run.ReadingModelID); err == nil {
+		return nil
+	}
+	tenant, err := s.tenantService.GetTenantByID(ctx, run.TenantID)
+	if err != nil || tenant == nil || strings.TrimSpace(tenant.ReadingModelID) == "" {
+		return s.ensureReadingModelSupportsThinking(ctx, run.ReadingModelID)
+	}
+	if tenant.ReadingModelID == run.ReadingModelID {
+		return s.ensureReadingModelSupportsThinking(ctx, run.ReadingModelID)
+	}
+	if retryErr := s.ensureReadingModelSupportsThinking(ctx, tenant.ReadingModelID); retryErr != nil {
+		return s.ensureReadingModelSupportsThinking(ctx, run.ReadingModelID)
+	}
+	run.ReadingModelID = strings.TrimSpace(tenant.ReadingModelID)
+	run.UpdatedAt = time.Now()
+	return nil
+}
+
 type readingDocument struct {
 	Knowledge *types.Knowledge
 	Chunks    []*types.Chunk
@@ -242,6 +267,12 @@ func (s *readingRunService) structuredStep(
 	if err := json.Unmarshal(run.Plan, &plan); err != nil {
 		return nil, werrors.NewInternalServerError("阅读计划损坏")
 	}
+	if err := s.ensureReadingRunModel(ctx, run); err != nil {
+		run.Status = types.ReadingRunStopped
+		run.UpdatedAt = time.Now()
+		_ = s.repo.UpdateRun(ctx, run)
+		return nil, err
+	}
 	sectionIndex := -1
 	for i := range plan.Sections {
 		if !plan.Sections[i].Read {
@@ -253,12 +284,6 @@ func (s *readingRunService) structuredStep(
 		return s.finishStructured(ctx, caller, run, &plan)
 	}
 	section := &plan.Sections[sectionIndex]
-	if err := s.ensureReadingModelSupportsThinking(ctx, run.ReadingModelID); err != nil {
-		run.Status = types.ReadingRunStopped
-		run.UpdatedAt = time.Now()
-		_ = s.repo.UpdateRun(ctx, run)
-		return nil, err
-	}
 	// Every round re-checks ACL before any window content reaches the model.
 	if _, err := s.ensureDocumentReadable(ctx, caller, section.KnowledgeID); err != nil {
 		run.Status = types.ReadingRunStopped

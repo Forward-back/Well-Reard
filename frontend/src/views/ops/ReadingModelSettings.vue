@@ -28,6 +28,7 @@ import { onMounted, ref } from 'vue'
 import { MessagePlugin } from 'tdesign-vue-next'
 import { listModels } from '@/api/model'
 import { getReadingConfig, updateReadingConfig } from '@/api/reading'
+import { modelSupportsThinking } from '@/utils/thinkingControl'
 
 const loading = ref(false)
 const selectedModelId = ref('')
@@ -41,10 +42,17 @@ async function load() {
       listModels('KnowledgeQA'),
       getReadingConfig(),
     ])
-    modelOptions.value = (models || []).map((model) => ({
-      value: String(model.id || ''),
-      label: model.display_name || model.name || String(model.id || ''),
-    })).filter((option) => option.value)
+    modelOptions.value = (models || [])
+      .filter((model: any) => modelSupportsThinking({
+        type: String(model.type || ''),
+        source: String(model.source || ''),
+        name: String(model.name || ''),
+        parameters: model.parameters || {},
+      }))
+      .map((model: any) => ({
+        value: String(model.id || ''),
+        label: `${model.display_name || model.name || String(model.id || '')} · 思考模型`,
+      })).filter((option) => option.value)
     selectedModelId.value = String(config?.data?.reading_model_id || '')
   } catch (err: any) {
     MessagePlugin.error(err?.message || String(err))

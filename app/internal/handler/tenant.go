@@ -16,6 +16,7 @@ import (
 	"gaze/internal/errors"
 	"gaze/internal/handler/dto"
 	"gaze/internal/logger"
+	"gaze/internal/models/chat"
 	"gaze/internal/types"
 	"gaze/internal/types/interfaces"
 	secutils "gaze/internal/utils"
@@ -2041,6 +2042,10 @@ func (h *TenantHandler) updateTenantReadingConfigInternal(c *gin.Context) {
 		}
 		if model.Type != types.ModelTypeKnowledgeQA {
 			c.Error(errors.NewBadRequestError("精读模型必须是 KnowledgeQA 类型"))
+			return
+		}
+		if chat.EffectiveThinkingControl(chat.ConfigFromModel(model)) == "none" {
+			c.Error(errors.NewBadRequestError("精读模型必须开启思考模式"))
 			return
 		}
 	}

@@ -54,7 +54,7 @@
     <div v-else class="reading-body" ref="readingBodyRef"
       :style="{ '--reading-left-width': leftWidth + 'px' }"
       :class="{ 'notes-collapsed': notesCollapsed, 'plan-collapsed': planCollapsed }">
-      <section v-if="!planCollapsed" class="reading-side reading-progress">
+      <section v-if="!planCollapsed" ref="documentPaneRef" class="reading-side reading-progress">
         <div class="reading-side-head">
           <span>{{ $t('reading.documentFullText') }}</span>
           <button type="button" class="reading-collapse" @click="planCollapsed = true">«</button>
@@ -75,7 +75,14 @@
           {{ $t('reading.currentLocation') }}：{{ currentSection.heading || currentSection.title }}
         </p>
         <div v-if="readingDocumentsLoading" class="reading-empty">{{ $t('reading.loadingDocument') }}</div>
-        <div v-else-if="activeDocument" class="reading-document-content">{{ activeDocument.content }}</div>
+        <div v-else-if="activeDocument" class="reading-document-content">
+          <template v-if="documentRange">
+            <span>{{ documentBefore }}</span>
+            <mark ref="documentCurrentRef" class="reading-document-current">{{ documentHighlight }}</mark>
+            <span>{{ documentAfter }}</span>
+          </template>
+          <template v-else>{{ activeDocument.content }}</template>
+        </div>
         <div v-else class="reading-empty">{{ $t('reading.noDocumentContent') }}</div>
         <div v-if="canAddDocs" class="reading-add-docs">
           <t-button size="small" variant="outline" @click="openAddDocs">
@@ -120,31 +127,15 @@
           </div>
 
           <div v-else-if="run.status === 'finished'" class="reading-final">
-            <div v-if="roundReasoning || roundSearchTraces.length" class="reading-thought-card">
-              <button type="button" class="reading-thought-head" @click="thoughtExpanded = !thoughtExpanded">
-                <span class="reading-thought-title">{{ $t('reading.thoughtChain') }}</span>
-                <span class="reading-thought-meta">
-                  {{ $t('reading.thoughtMeta', {
-                    searches: roundSearchTraces.length,
-                    questions: roundQuestions.length,
-                    duration: currentRoundDurationLabel || '—',
-                  }) }}
-                </span>
-                <span class="reading-thought-caret">{{ thoughtExpanded ? '▾' : '▸' }}</span>
-              </button>
-              <div v-if="thoughtExpanded" class="reading-thought-body">
-                <pre v-if="roundReasoning" class="reading-thought-reasoning">{{ roundReasoning }}</pre>
-                <p v-else class="reading-empty">{{ $t('reading.noReasoning') }}</p>
-                <div v-if="roundSearchTraces.length" class="reading-thought-phase">
-                  <span class="reading-thought-label">{{ $t('reading.phaseSearch') }}</span>
-                  <ul>
-                    <li v-for="(trace, index) in roundSearchTraces" :key="index">
-                      {{ trace.query }} · {{ $t('reading.searchHits', { count: trace.hit_count }) }}
-                    </li>
-                  </ul>
-                </div>
-              </div>
-            </div>
+            <ReadingThoughtChain
+              :trace="currentRoundTrace"
+              :questions="roundQuestions"
+              :section-title="traceSection?.title"
+              :section-heading="traceSection?.heading"
+              :duration-label="selectedTraceDurationLabel"
+              :round-options="traceRoundOptions"
+              v-model:selected-round="selectedTraceRound"
+            />
             <h3>{{ $t('reading.final') }}</h3>
             <p v-if="finalSummary" class="reading-final-summary">{{ finalSummary }}</p>
             <div class="reading-final-stats">
@@ -156,34 +147,15 @@
           </div>
 
           <div v-else-if="currentPendingQuestion" class="reading-question">
-            <div v-if="roundReasoning || roundSearchTraces.length" class="reading-thought-card">
-              <button type="button" class="reading-thought-head" @click="thoughtExpanded = !thoughtExpanded">
-                <span class="reading-thought-title">{{ $t('reading.thoughtChain') }}</span>
-                <span class="reading-thought-meta">
-                  {{ $t('reading.thoughtMeta', {
-                    searches: roundSearchTraces.length,
-                    questions: roundQuestions.length,
-                    duration: currentRoundDurationLabel || '—',
-                  }) }}
-                </span>
-                <span class="reading-thought-caret">{{ thoughtExpanded ? '▾' : '▸' }}</span>
-              </button>
-              <div v-if="thoughtExpanded" class="reading-thought-body">
-                <div class="reading-thought-phase">
-                  <span class="reading-thought-label">{{ $t('reading.phaseReasoning') }}</span>
-                  <pre v-if="roundReasoning" class="reading-thought-reasoning">{{ roundReasoning }}</pre>
-                  <p v-else class="reading-empty">{{ $t('reading.noReasoning') }}</p>
-                </div>
-                <div v-if="roundSearchTraces.length" class="reading-thought-phase">
-                  <span class="reading-thought-label">{{ $t('reading.phaseSearch') }}</span>
-                  <ul>
-                    <li v-for="(trace, index) in roundSearchTraces" :key="index">
-                      {{ trace.query }} · {{ $t('reading.searchHits', { count: trace.hit_count }) }}
-                    </li>
-                  </ul>
-                </div>
-              </div>
-            </div>
+            <ReadingThoughtChain
+              :trace="currentRoundTrace"
+              :questions="roundQuestions"
+              :section-title="traceSection?.title"
+              :section-heading="traceSection?.heading"
+              :duration-label="selectedTraceDurationLabel"
+              :round-options="traceRoundOptions"
+              v-model:selected-round="selectedTraceRound"
+            />
             <div class="reading-question-meta">
               <t-tag size="small" theme="warning" variant="light">{{ $t('reading.pendingConfirm') }}</t-tag>
               <span>{{ $t('reading.roundLabel', { round: currentPendingQuestion.round }) }}</span>
@@ -228,63 +200,16 @@
           </div>
 
           <template v-else>
-            <div v-if="advancing" class="reading-thought-card reading-thought-loading">
-              <span class="reading-thought-title">{{ $t('reading.thinkingNow') }}</span>
-              <t-loading size="small" />
-            </div>
-            <div v-else class="reading-thought-card">
-              <button type="button" class="reading-thought-head" @click="thoughtExpanded = !thoughtExpanded">
-                <span class="reading-thought-title">{{ $t('reading.thoughtChain') }}</span>
-                <span class="reading-thought-meta">
-                  {{ $t('reading.thoughtMeta', {
-                    searches: roundSearchTraces.length,
-                    questions: roundQuestions.length,
-                    duration: currentRoundDurationLabel || '—',
-                  }) }}
-                </span>
-                <span class="reading-thought-caret">{{ thoughtExpanded ? '▾' : '▸' }}</span>
-              </button>
-              <div v-if="thoughtExpanded" class="reading-thought-body">
-                <div class="reading-thought-phase">
-                  <span class="reading-thought-label">{{ $t('reading.phaseWindow') }}</span>
-                  <p>
-                    {{ currentSection?.title }}
-                    <template v-if="currentSection?.heading"> · {{ currentSection.heading }}</template>
-                  </p>
-                </div>
-                <div class="reading-thought-phase">
-                  <span class="reading-thought-label">{{ $t('reading.phaseReasoning') }}</span>
-                  <pre v-if="roundReasoning" class="reading-thought-reasoning">{{ roundReasoning }}</pre>
-                  <p v-else class="reading-empty">{{ $t('reading.noReasoning') }}</p>
-                </div>
-                <div v-if="roundQuestions.length" class="reading-thought-phase">
-                  <span class="reading-thought-label">{{ $t('reading.phaseQuestions') }}</span>
-                  <ul>
-                    <li v-for="question in roundQuestions" :key="question.id">
-                      {{ question.text }}<span v-if="question.why" class="reading-thought-why">（{{ question.why }}）</span>
-                    </li>
-                  </ul>
-                </div>
-                <div v-if="roundSearchTraces.length" class="reading-thought-phase">
-                  <span class="reading-thought-label">{{ $t('reading.phaseSearch') }}</span>
-                  <ul>
-                    <li v-for="(trace, index) in roundSearchTraces" :key="index">
-                      {{ trace.query }} · {{ $t('reading.searchHits', { count: trace.hit_count }) }}
-                    </li>
-                  </ul>
-                </div>
-                <div class="reading-thought-phase">
-                  <span class="reading-thought-label">{{ $t('reading.phaseDeposit') }}</span>
-                  <p>{{
-                    $t('reading.traceCounts', {
-                      conclusions: roundTraceCounts.conclusions,
-                      terms: roundTraceCounts.terms,
-                      contradictions: roundTraceCounts.contradictions,
-                    })
-                  }}</p>
-                </div>
-              </div>
-            </div>
+            <ReadingThoughtChain
+              :trace="currentRoundTrace"
+              :questions="roundQuestions"
+              :section-title="traceSection?.title"
+              :section-heading="traceSection?.heading"
+              :duration-label="selectedTraceDurationLabel"
+              :round-options="traceRoundOptions"
+              :advancing="advancing"
+              v-model:selected-round="selectedTraceRound"
+            />
 
             <div class="reading-round-card">
               <div class="reading-round-head">
@@ -594,7 +519,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, ref, watch, type Directive } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch, type Directive } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useRoute, useRouter } from 'vue-router'
 import { MessagePlugin } from 'tdesign-vue-next'
@@ -623,6 +548,7 @@ import {
   type ReadingRun,
   type ReadingRunStep,
 } from '@/api/reading'
+import ReadingThoughtChain from '@/components/ReadingThoughtChain.vue'
 
 const { t } = useI18n()
 const route = useRoute()
@@ -652,7 +578,9 @@ const readingBodyRef = ref<HTMLElement | null>(null)
 const readingDocuments = ref<ReadingDocument[]>([])
 const readingDocumentsLoading = ref(false)
 const activeDocumentId = ref('')
-const thoughtExpanded = ref(true)
+const documentPaneRef = ref<HTMLElement | null>(null)
+const documentCurrentRef = ref<HTMLElement | null>(null)
+const selectedTraceRound = ref(0)
 const leftWidth = ref(loadStoredLeftWidth())
 const storageKey = 'gaze_active_reading_run_id'
 
@@ -740,19 +668,90 @@ const latestRoundStep = computed(() => {
   }
   return null
 })
-const currentRoundTrace = computed(() => latestRoundStep.value?.notes_patch || {})
+const traceRoundSteps = computed(() =>
+  (run.value?.steps || []).filter((step) => step.action === 'round' || step.action === 'ask_user'),
+)
+const traceRoundOptions = computed(() =>
+  traceRoundSteps.value.map((step) => ({
+    value: step.seq,
+    label: t('reading.roundLabel', { round: step.seq }),
+  })),
+)
+const selectedTraceStep = computed(() =>
+  traceRoundSteps.value.find((step) => step.seq === selectedTraceRound.value) || latestRoundStep.value,
+)
+const currentRoundTrace = computed(() => selectedTraceStep.value?.notes_patch || {})
 const roundQuestions = computed(() =>
-  (run.value?.questions || []).filter((question) => question.round === currentRound.value),
+  (run.value?.questions || []).filter((question) => question.round === selectedTraceStep.value?.seq),
 )
-const roundSearchTraces = computed(() => currentRoundTrace.value.search_trace || [])
-const roundReasoning = computed(() =>
-  typeof currentRoundTrace.value.reasoning === 'string' ? currentRoundTrace.value.reasoning : '',
+const selectedTraceDurationLabel = computed(() => {
+  const ms = Number(currentRoundTrace.value.duration_ms || 0)
+  if (ms <= 0) return ''
+  return t('reading.roundDuration', { seconds: Math.max(1, Math.round(ms / 1000)) })
+})
+const traceSection = computed(() =>
+  (run.value?.plan.sections || []).find((section) => section.id === selectedTraceStep.value?.section_id) ||
+  currentSection.value,
 )
-const roundTraceCounts = computed(() => ({
-  conclusions: Number(currentRoundTrace.value.conclusion_count || 0),
-  terms: Number(currentRoundTrace.value.term_count || 0),
-  contradictions: Number(currentRoundTrace.value.contradiction_count || 0),
-}))
+const currentPositionSection = computed(() =>
+  traceSection.value ||
+  (run.value?.plan.sections || []).find((section) => !section.read) ||
+  (run.value?.plan.sections || [])[0] ||
+  null,
+)
+const activeDocumentSection = computed(() => {
+  const section = currentPositionSection.value
+  if (!section || !activeDocument.value) return null
+  return (activeDocument.value.sections || []).find((item) => item.id === section.id) || null
+})
+const documentRange = computed(() => {
+  const section = activeDocumentSection.value
+  const content = activeDocument.value?.content || ''
+  if (!section) return null
+  const start = Math.max(0, Math.min(Number(section.start || 0), content.length))
+  const end = Math.max(start, Math.min(Number(section.end || 0), content.length))
+  return end > start ? { start, end } : null
+})
+const documentBefore = computed(() =>
+  documentRange.value ? (activeDocument.value?.content || '').slice(0, documentRange.value.start) : '',
+)
+const documentHighlight = computed(() =>
+  documentRange.value
+    ? (activeDocument.value?.content || '').slice(documentRange.value.start, documentRange.value.end)
+    : '',
+)
+const documentAfter = computed(() =>
+  documentRange.value ? (activeDocument.value?.content || '').slice(documentRange.value.end) : '',
+)
+
+async function scrollToDocumentSection() {
+  await nextTick()
+  const pane = documentPaneRef.value
+  const mark = documentCurrentRef.value
+  if (!pane || !mark) return
+  const paneRect = pane.getBoundingClientRect()
+  const markRect = mark.getBoundingClientRect()
+  if (markRect.top >= paneRect.top && markRect.bottom <= paneRect.bottom) return
+  pane.scrollTop += markRect.top - paneRect.top - 60
+}
+
+watch(
+  [() => activeDocumentId.value, () => currentPositionSection.value?.id],
+  () => {
+    void scrollToDocumentSection()
+  },
+)
+
+watch(
+  latestRoundStep,
+  (step, previous) => {
+    if (!step) return
+    if (!selectedTraceRound.value || selectedTraceRound.value === previous?.seq) {
+      selectedTraceRound.value = step.seq
+    }
+  },
+  { immediate: true },
+)
 
 const DEFAULT_LEFT_WIDTH = 320
 const MIN_LEFT_WIDTH = 220
@@ -1691,6 +1690,13 @@ onBeforeUnmount(() => {
   white-space: pre-wrap;
   overflow-wrap: anywhere;
   word-break: break-word;
+}
+
+.reading-document-current {
+  padding: 0 2px;
+  color: inherit;
+  background: var(--td-brand-color-light);
+  border-radius: 3px;
 }
 
 .reading-side,

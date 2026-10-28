@@ -7,6 +7,7 @@ import (
 	"sort"
 	"strings"
 	"time"
+	"unicode/utf16"
 
 	"github.com/google/uuid"
 
@@ -298,14 +299,10 @@ func (s *readingRunService) GetDocuments(
 	}
 	var documentIDs []string
 	_ = json.Unmarshal(run.DocumentIDs, &documentIDs)
-	sectionsByDoc := map[string][]types.ReadingDocumentSection{}
+	planSectionsByDoc := map[string][]types.ReadingSection{}
 	for _, section := range plan.Sections {
-		sectionsByDoc[section.KnowledgeID] = append(
-			sectionsByDoc[section.KnowledgeID],
-			types.ReadingDocumentSection{
-				ID: section.ID, Title: section.Title,
-				Heading: section.Heading, Read: section.Read,
-			},
+		planSectionsByDoc[section.KnowledgeID] = append(
+			planSectionsByDoc[section.KnowledgeID], section,
 		)
 	}
 	documents := make([]types.ReadingDocument, 0, len(documentIDs))
@@ -322,6 +319,9 @@ func (s *readingRunService) GetDocuments(
 			return chunks[i].ChunkIndex < chunks[j].ChunkIndex
 		})
 		var builder strings.Builder
+		chunkStart := map[string]int{}
+		chunkLength := map[string]int{}
+		contentLength := 0
 		for _, chunk := range chunks {
 			if chunk == nil {
 				continue
@@ -330,21 +330,53 @@ func (s *readingRunService) GetDocuments(
 			if content == "" {
 				continue
 			}
-			if builder.Len() > 0 {
+			if contentLength > 0 {
 				builder.WriteString("\n\n")
+				contentLength += 2
 			}
+			chunkStart[chunk.ID] = contentLength
 			builder.WriteString(content)
+			length := utf16Length(content)
+			chunkLength[chunk.ID] = length
+			contentLength += length
 		}
 		title := knowledge.Title
 		if strings.TrimSpace(title) == "" {
 			title = knowledge.FileName
 		}
+		sections := make([]types.ReadingDocumentSection, 0, len(planSectionsByDoc[knowledge.ID]))
+		for _, section := range planSectionsByDoc[knowledge.ID] {
+			start, end := 0, 0
+			if len(section.ChunkIDs) > 0 {
+				first, last := section.ChunkIDs[0], section.ChunkIDs[len(section.ChunkIDs)-1]
+				if firstStart, ok := chunkStart[first]; ok {
+					start = firstStart
+					if lastStart, ok := chunkStart[last]; ok {
+						end = lastStart + chunkLength[last]
+					}
+				}
+			}
+			sections = append(sections, types.ReadingDocumentSection{
+				ID: section.ID, Title: section.Title, Heading: section.Heading,
+				Read: section.Read, Start: start, End: end,
+			})
+		}
 		documents = append(documents, types.ReadingDocument{
 			ID: knowledge.ID, Title: title, FileName: knowledge.FileName,
-			Content: builder.String(), Sections: sectionsByDoc[knowledge.ID],
+			Content: builder.String(), Sections: sections,
 		})
 	}
 	return &types.ReadingRunDocuments{Documents: documents}, nil
+}
+
+func utf16Length(value string) int {
+	length := 0
+	for _, r := range value {
+		if n := utf16.RuneLen(r); n > 0 {
+			length += n
+		}
+	}
+	return length
 }
 
 func (s *readingRunService) checkReadingDocumentsReadable(

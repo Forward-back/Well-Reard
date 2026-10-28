@@ -97,6 +97,8 @@ export interface ReadingDocumentSection {
   title?: string
   heading?: string
   read: boolean
+  start: number
+  end: number
 }
 
 export interface ReadingDocument {

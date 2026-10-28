@@ -7311,10 +7311,10 @@ export default {
     },
     readingModel: {
       title: '精读专用模型',
-      description: '只对交互式精读生效，不参与普通问答检索；仅可选择 KnowledgeQA 类型模型。',
+      description: '只对交互式精读生效，不参与普通问答检索；仅可选择支持思考模式的 KnowledgeQA 模型。',
       placeholder: '选择精读模型',
-      hint: '未选择时，用户无法创建精读任务。',
-      noModels: '暂无 KnowledgeQA 模型，请先在“模型”页添加。',
+      hint: '精读强制开启思考模式；不支持思考的模型不会出现在列表中。',
+      noModels: '暂无可用的思考模型，请先在“模型”页添加支持思考的 KnowledgeQA 模型。',
       saved: '精读模型已更新。'
     },
     integrations: {
