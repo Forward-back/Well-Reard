@@ -1,0 +1,17 @@
+{
+  "schemaVersion": 1,
+  "receiptId": "e1b5dc96-81a2-4652-a047-26e9b866d974",
+  "status": "current",
+  "command": "deliver",
+  "type": "architecture",
+  "input": "D:\\GitHub项目学习\\WellRead\\.archify\\architecture-wellread-login-20261026\\candidate.json",
+  "output": "D:\\GitHub项目学习\\WellRead\\frontend\\public\\diagrams\\wellread-architecture.html",
+  "specification": {
+    "sha256": "85fe0d381ef2606cc988052eb486718cf20a9e9e5e8b5a00d2e1907ce1151cc1",
+    "bytes": 5112
+  },
+  "artifact": {
+    "sha256": "6931bff1f0fa50405618af574d6bf7c82eeda06ad9decf400439795e333dfc23",
+    "bytes": 849673
+  }
+}

@@ -1,0 +1,41 @@
+# 热重载 overlay:app 服务换成 dev 镜像 + 源码 bind mount + air 自动重编译
+#
+# 用法:
+#   docker compose -f deployments/docker-compose.yml -f deployments/docker-compose.hotreload.yml up -d app
+#   docker compose logs -f app          # 观察 air 编译/重启
+# 切回正常镜像:
+#   docker compose -f deployments/docker-compose.yml up -d app
+#
+# 注意:
+# - 首次 up 会构建 dev 镜像(builder 层全部缓存,仅增量装 air)
+# - anydoc 静态库在镜像内构建,用 named volume 挂到 /app/third_party/anydoc-go/lib,
+#   避免源码 bind mount 遮蔽镜像产物
+# - go 构建缓存走 named volume,重编译秒级完成
+services:
+  app:
+    image: gaze-app-dev:latest
+    build:
+      context: ../app
+      dockerfile: docker/Dockerfile.app
+      target: dev
+      args:
+        - APK_MIRROR_ARG=${APK_MIRROR_ARG:-}
+        - WITH_ANYDOC=${WITH_ANYDOC:-1}
+        - GOPROXY_ARG=${GOPROXY_ARG:-https://goproxy.cn,direct}
+    volumes:
+      - ../app:/app
+      - anydoc-lib:/app/third_party/anydoc-go/lib
+      - go-build-cache:/root/.cache/go-build
+      - go-mod-cache:/go/pkg/mod
+    command: ["air", "-c", ".air.hotreload.toml"]
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 600s
+
+volumes:
+  anydoc-lib:
+  go-build-cache:
+  go-mod-cache:

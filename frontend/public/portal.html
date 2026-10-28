@@ -1,0 +1,265 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>知识门户</title>
+<style>
+  :root {
+    --brand: #0f6cbd;
+    --bg: #f5f7fa;
+    --card: #ffffff;
+    --text: #1f2329;
+    --muted: #86909c;
+    --border: #e5e6eb;
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    font-family: -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    min-height: 100vh;
+    display: flex;
+    flex-direction: column;
+  }
+  header {
+    background: var(--card);
+    border-bottom: 1px solid var(--border);
+    padding: 14px 24px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+  }
+  header h1 { font-size: 18px; font-weight: 600; }
+  header .brand-dot { color: var(--brand); }
+  #kb-picker { max-width: 260px; padding: 6px 10px; border: 1px solid var(--border); border-radius: 6px; font-size: 13px; }
+  main {
+    flex: 1;
+    width: 100%;
+    max-width: 860px;
+    margin: 0 auto;
+    padding: 20px 16px;
+    display: flex;
+    flex-direction: column;
+  }
+  #chat { flex: 1; overflow-y: auto; display: flex; flex-direction: column; gap: 14px; padding-bottom: 12px; }
+  .msg { max-width: 78%; padding: 10px 14px; border-radius: 10px; line-height: 1.6; font-size: 14px; white-space: pre-wrap; word-break: break-word; }
+  .msg.user { align-self: flex-end; background: var(--brand); color: #fff; border-bottom-right-radius: 2px; }
+  .msg.assistant { align-self: flex-start; background: var(--card); border: 1px solid var(--border); border-bottom-left-radius: 2px; }
+  .msg .refs { margin-top: 8px; font-size: 12px; color: var(--muted); border-top: 1px dashed var(--border); padding-top: 6px; }
+  .msg .refs span { display: block; }
+  #composer {
+    display: flex;
+    gap: 10px;
+    padding: 12px 0;
+    border-top: 1px solid var(--border);
+  }
+  #question {
+    flex: 1;
+    padding: 10px 14px;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    font-size: 14px;
+    resize: none;
+    height: 44px;
+    outline: none;
+  }
+  #question:focus { border-color: var(--brand); }
+  #send {
+    padding: 0 22px;
+    border: none;
+    border-radius: 8px;
+    background: var(--brand);
+    color: #fff;
+    font-size: 14px;
+    cursor: pointer;
+  }
+  #send:disabled { opacity: .5; cursor: not-allowed; }
+  .hint { text-align: center; color: var(--muted); font-size: 12px; padding: 6px 0; }
+  .hint a { color: var(--brand); text-decoration: none; }
+  .error { color: #d03050; font-size: 13px; text-align: center; padding: 8px; }
+  .privacy-modal {
+    position: fixed; inset: 0; background: rgba(0,0,0,.45);
+    display: flex; align-items: center; justify-content: center; z-index: 100;
+  }
+  .privacy-modal[hidden] { display: none; }
+  .privacy-box {
+    background: var(--bg, #fff); border-radius: 12px; max-width: 560px;
+    width: calc(100% - 48px); padding: 20px 24px; box-shadow: 0 8px 32px rgba(0,0,0,.2);
+  }
+  .privacy-box h2 { margin: 0 0 8px; font-size: 17px; }
+  .privacy-body { font-size: 13px; line-height: 1.7; color: var(--text, #333); max-height: 50vh; overflow: auto; }
+  .privacy-body ol { padding-left: 18px; margin: 8px 0; }
+  .privacy-body li { margin: 6px 0; }
+  .privacy-foot { color: var(--muted); }
+  .privacy-close {
+    display: block; margin: 12px auto 0; padding: 8px 28px; border: none;
+    border-radius: 8px; background: var(--brand); color: #fff; cursor: pointer;
+  }
+</style>
+</head>
+<body>
+<header>
+  <h1><span class="brand-dot">●</span> 知识门户</h1>
+  <select id="kb-picker">
+    <option value="">全部公开知识库</option>
+  </select>
+</header>
+<main>
+  <div id="chat"></div>
+  <div class="hint">匿名体验每天可提问 5 次 · <a href="#" id="privacy-link" onclick="openPrivacy(event)">隐私声明</a></div>
+  <div id="composer">
+    <textarea id="question" placeholder="请输入你的问题…（Enter 发送）"></textarea>
+    <button id="send">发送</button>
+  </div>
+</main>
+<div id="privacy-modal" class="privacy-modal" hidden>
+  <div class="privacy-box">
+    <h2>隐私声明</h2>
+    <div class="privacy-body">
+      <p>本门户为公开知识库的匿名问答入口。使用前请阅读以下说明：</p>
+      <ol>
+        <li><strong>匿名访问</strong>：无需注册或提供个人身份信息，系统仅签发一次性匿名访问令牌用于会话管理。</li>
+        <li><strong>问答记录</strong>：为保障服务质量和合规审计，您的提问与回答内容将被保留 <strong>90 天</strong>，到期后自动删除。</li>
+        <li><strong>使用限制</strong>：匿名用户每日最多提问 5 次；系统对异常访问频率设有防护机制。</li>
+        <li><strong>内容范围</strong>：回答仅来源于已公开发布的知识文档；涉及敏感或未公开内容的提问将无法获得回答。</li>
+        <li><strong>技术信息</strong>：系统可能记录访问 IP 等必要技术信息用于安全防护，不作其他用途。</li>
+      </ol>
+      <p class="privacy-foot">如对隐私保护有任何疑问，请联系知识库运营方。</p>
+    </div>
+    <button class="privacy-close" onclick="closePrivacy()">我知道了</button>
+  </div>
+</div>
+<script>
+(function () {
+  var token = null;
+  var chatEl = document.getElementById('chat');
+  var questionEl = document.getElementById('question');
+  var sendBtn = document.getElementById('send');
+  var kbPicker = document.getElementById('kb-picker');
+
+  window.openPrivacy = function (e) {
+    if (e) e.preventDefault();
+    document.getElementById('privacy-modal').hidden = false;
+  };
+  window.closePrivacy = function () {
+    document.getElementById('privacy-modal').hidden = true;
+  };
+
+  function append(role, text, refs) {
+    var div = document.createElement('div');
+    div.className = 'msg ' + role;
+    div.textContent = text;
+    if (refs && refs.length) {
+      var r = document.createElement('div');
+      r.className = 'refs';
+      refs.forEach(function (t) {
+        var s = document.createElement('span');
+        s.textContent = '来源: ' + t;
+        r.appendChild(s);
+      });
+      div.appendChild(r);
+    }
+    chatEl.appendChild(div);
+    chatEl.scrollTop = chatEl.scrollHeight;
+    return div;
+  }
+
+  async function ensureToken() {
+    if (token) return token;
+    var resp = await fetch('/portal/anonymous-token', { method: 'POST' });
+    var body = await resp.json();
+    if (!body.success || !body.data || !body.data.token) {
+      throw new Error(body.message || '获取访问令牌失败');
+    }
+    token = body.data.token;
+    return token;
+  }
+
+  async function loadKBs() {
+    try {
+      var t = await ensureToken();
+      var resp = await fetch('/portal/kbs', { headers: { Authorization: 'Bearer ' + t } });
+      var body = await resp.json();
+      if (!body.success) return;
+      (body.data || []).forEach(function (kb) {
+        var opt = document.createElement('option');
+        opt.value = kb.id;
+        opt.textContent = kb.name;
+        kbPicker.appendChild(opt);
+      });
+    } catch (e) { /* 列表加载失败不阻断提问 */ }
+  }
+
+  async function ask() {
+    var q = questionEl.value.trim();
+    if (!q || sendBtn.disabled) return;
+    sendBtn.disabled = true;
+    append('user', q);
+    questionEl.value = '';
+    var pending = append('assistant', '思考中…');
+    try {
+      var t = await ensureToken();
+      var resp = await fetch('/portal/chat', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + t },
+        body: JSON.stringify({ question: q, kb_id: kbPicker.value || '' }),
+      });
+      if (!resp.ok || !resp.body) {
+        var errBody = await resp.json().catch(function () { return {}; });
+        pending.textContent = errBody.message || '请求失败(' + resp.status + ')';
+        return;
+      }
+      var reader = resp.body.getReader();
+      var decoder = new TextDecoder();
+      var buf = '';
+      var started = false;
+      while (true) {
+        var chunk = await reader.read();
+        if (chunk.done) break;
+        buf += decoder.decode(chunk.value, { stream: true });
+        var lines = buf.split('\n\n');
+        buf = lines.pop();
+        lines.forEach(function (block) {
+          var line = block.trim();
+          if (!line.startsWith('data:')) return;
+          var payload = JSON.parse(line.slice(5).trim());
+          if (payload.type === 'delta') {
+            if (!started) { pending.textContent = ''; started = true; }
+            pending.textContent += payload.content;
+            chatEl.scrollTop = chatEl.scrollHeight;
+          } else if (payload.type === 'references') {
+            pending._refs = payload.references || [];
+          } else if (payload.type === 'error') {
+            pending.textContent = payload.message || '服务暂时不可用';
+          }
+        });
+      }
+      if (pending._refs && pending._refs.length && !pending.querySelector('.refs')) {
+        var r = document.createElement('div');
+        r.className = 'refs';
+        pending._refs.forEach(function (t) {
+          var s = document.createElement('span');
+          s.textContent = '来源: ' + t;
+          r.appendChild(s);
+        });
+        pending.appendChild(r);
+      }
+      if (!started) pending.textContent = '（无回答）';
+    } catch (e) {
+      pending.textContent = '请求失败: ' + e.message;
+    } finally {
+      sendBtn.disabled = false;
+      questionEl.focus();
+    }
+  }
+
+  sendBtn.addEventListener('click', ask);
+  questionEl.addEventListener('keydown', function (e) {
+    if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); ask(); }
+  });
+  loadKBs();
+})();
+</script>
+</body>
+</html>

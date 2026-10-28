@@ -1,0 +1,2 @@
+-- Keep the table and embedding BLOB: dropping it would discard Lite vectors.
+-- The runtime retriever owns this table; this migration is intentionally a no-op.

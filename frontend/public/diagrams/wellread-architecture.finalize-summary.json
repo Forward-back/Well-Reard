@@ -1,0 +1,51 @@
+{
+  "schemaVersion": 1,
+  "ok": true,
+  "command": "finalize",
+  "status": "pass",
+  "type": "architecture",
+  "quality": "showcase",
+  "specification": {
+    "path": "D:\\GitHub项目学习\\WellRead\\.archify\\architecture-wellread-login-20261026\\candidate.json",
+    "sha256": "818fc6091c103692dc6dccbfaed0b2df25486f45dda44108031ad1dbf40ef1f9",
+    "bytes": 3727
+  },
+  "artifact": {
+    "path": "D:\\GitHub项目学习\\WellRead\\frontend\\public\\diagrams\\wellread-architecture.html",
+    "sha256": "4bba039cb18e68523eda7025d851cdf7e505fbfe5ee42b8f1eb28dbcc4578271",
+    "bytes": 852384
+  },
+  "gates": {
+    "validate": "pass",
+    "deliver": "pass",
+    "check": "pass",
+    "browser-check": "pass"
+  },
+  "diagnostics": [],
+  "diagnosticSummary": {
+    "total": 0,
+    "shown": 0,
+    "truncated": false
+  },
+  "evidence": {
+    "receipt": "D:\\GitHub项目学习\\WellRead\\frontend\\public\\diagrams\\wellread-architecture.finalize.json",
+    "summaryReceipt": "D:\\GitHub项目学习\\WellRead\\frontend\\public\\diagrams\\wellread-architecture.finalize-summary.json",
+    "browserCheckReceipt": "D:\\GitHub项目学习\\WellRead\\frontend\\public\\diagrams\\wellread-architecture.browser-check.json"
+  },
+  "update": {
+    "status": "current",
+    "installedVersion": "3.2.0",
+    "availableVersion": "3.2.0",
+    "releaseNotes": null,
+    "checkedAt": "2026-10-26T14:00:01.433Z",
+    "source": "network",
+    "noticeRequired": false,
+    "noticeText": null
+  },
+  "visualReview": "not-requested",
+  "durationMs": 7849,
+  "browserCheck": {
+    "requested": true,
+    "ran": true
+  }
+}

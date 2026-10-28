@@ -1,0 +1,395 @@
+# -*- coding: utf-8 -*-
+"""Stage_2 检索质量评测可视化（顶刊风格修订版，10 幅 SVG）"""
+from pathlib import Path
+import json
+
+import matplotlib.pyplot as plt
+import numpy as np
+
+BASE = Path(__file__).resolve().parent
+DATA = BASE.parent
+
+# ── 统一色板（沿用项目主色，向色盲安全靠拢）──
+C_BLUE, C_BLUE_L = "#13457E", "#9BC8FA"     # RRF / 下降
+C_RED,  C_RED_L  = "#A31515", "#F6A9A4"     # Rerank / 提升
+C_GREY, C_GREY_D, NEUTRAL = "#A6A6AB", "#666666", "#999999"
+STRAT_COLORS = [C_GREY, "#8BACD3", "#C28BB7"]   # 与 strategies 顺序对应
+
+plt.rcParams.update({
+    "figure.constrained_layout.use": True,
+    "savefig.dpi": 600,
+    # 具体字体列表才会触发 matplotlib 字形回退；经泛型 sans-serif 列表回退在 3.10 不生效
+    "font.family": ["Arial", "Microsoft YaHei"],
+    "font.size": 11, "axes.titlesize": 12.5, "axes.labelsize": 12,
+    "xtick.labelsize": 10.5, "ytick.labelsize": 10.5, "legend.fontsize": 10,
+    "axes.linewidth": 0.8, "xtick.major.width": 0.8, "ytick.major.width": 0.8,
+    "xtick.direction": "out", "ytick.direction": "out",
+    "axes.spines.top": False, "axes.spines.right": False,
+    "axes.grid": True, "grid.color": "#E8E8E8", "grid.linewidth": 0.6,
+    "axes.axisbelow": True, "legend.frameon": False,
+    "svg.fonttype": "none",     # 文字可编辑；若投稿需转曲改回 "path"
+    "pdf.fonttype": 42,
+})
+
+
+def save(fig, name):
+    fig.savefig(BASE / name, bbox_inches="tight", pad_inches=0.06)
+    plt.close(fig)
+    print(name)
+
+
+def load(name):
+    return json.loads((DATA / name).read_text(encoding="utf-8"))
+
+
+# ── 图1 Recall@K（4:3）：增益区域填充 + 线端直标 ──
+def fig1():
+    d = load("recall_at_k.json")
+    ks = np.arange(1, 21)
+    rrf = np.array([d["rrf"][str(k)] for k in ks])
+    rer = np.array([d["rerank"][str(k)] for k in ks])
+
+    fig, ax = plt.subplots(figsize=(6.4, 4.8))
+    ax.grid(axis="y")
+    ax.fill_between(ks, rrf, rer, color=C_RED_L, alpha=0.45, lw=0,
+                    label="Rerank 增益")
+    ax.plot(ks, rrf, lw=2.0, ls="--", c=C_BLUE, marker="s", ms=4,
+            mec="white", mew=0.7, label="RRF 融合")
+    ax.plot(ks, rer, lw=2.6, c=C_RED, marker="o", ms=4.5,
+            mec="white", mew=0.7, label="Rerank")
+    ax.annotate(f"{rrf[-1]:.3f}", (ks[-1], rrf[-1]), xytext=(7, -2),
+                textcoords="offset points", color=C_BLUE, fontsize=10)
+    ax.annotate(f"{rer[-1]:.3f}", (ks[-1], rer[-1]), xytext=(7, 2),
+                textcoords="offset points", color=C_RED, fontsize=10,
+                fontweight="bold")
+    ax.set_xlim(0.5, 22.5)                 # 右侧留白给数值标注
+    ax.set_xticks([1, 5, 10, 15, 20])
+    ax.set_ylim(0, 1.05)
+    ax.set_xlabel("K"); ax.set_ylabel("Recall")
+    ax.legend(loc="lower right")
+    ax.set_title("分层召回率 Recall@K")
+    save(fig, "fig1_recall_k.svg")
+
+
+# ── 图2 召回增量阶梯（16:9）──
+def fig2():
+    d = load("recall_at_k.json")
+    ks = np.arange(1, 21)
+    rer = np.array([d["rerank"][str(k)] for k in ks])
+    gains = np.diff(rer, prepend=0.0)
+
+    fig, ax = plt.subplots(figsize=(9.6, 5.0))
+    ax.grid(axis="y")
+    ax.fill_between(ks, gains, step="mid", color=C_BLUE_L, alpha=0.55, lw=0)
+    ax.step(ks, gains, where="mid", lw=2, c=C_BLUE)
+    ax.plot(ks, gains, "o", ms=4, c=C_BLUE, mec="white", mew=0.7)
+    for k, g in zip(ks, gains):
+        if g > 0.015:
+            ax.text(k, g + 0.004, f"{g:.2f}", ha="center", va="bottom",
+                    fontsize=9, color=C_BLUE)
+    ax.set_xlim(0.5, 20.5)
+    ax.set_xticks([1, 5, 10, 15, 20])
+    ax.set_ylim(0, max(gains.max() * 1.25, 0.02))
+    ax.set_xlabel("K"); ax.set_ylabel("Recall 增量")
+    ax.set_title("召回增量贡献（Rerank）")
+    save(fig, "fig2_recall_gain.svg")
+
+
+# ── 图3 排序分布热力图 + 右侧边际分布（16:9）──
+def fig3():
+    rows = load("rank_distribution.json")
+    qids = sorted({r["id"] for r in rows})
+    col = {q: i for i, q in enumerate(qids)}
+    n_q, max_rank = len(qids), 15
+
+    grid = np.full((max_rank, n_q), np.nan)        # NaN = 未命中
+    for r in rows:
+        if r["rank"] is not None and 1 <= r["rank"] <= max_rank:
+            grid[r["rank"] - 1, col[r["id"]]] = 1.0
+
+    fig, (ax, ax_m) = plt.subplots(
+        1, 2, figsize=(10.8, 6.0), sharey=True,
+        gridspec_kw={"width_ratios": [n_q, 1.1]})
+    ax.grid(False); ax_m.grid(False)
+
+    cmap = plt.cm.Reds.copy()          # copy() 防止污染全局 colormap
+    cmap.set_bad("white")
+    ax.imshow(grid, cmap=cmap, aspect="auto", vmin=0, vmax=1,
+              interpolation="nearest")
+    ax.set_xticks(np.arange(-.5, n_q, 1), minor=True)
+    ax.set_yticks(np.arange(-.5, max_rank, 1), minor=True)
+    ax.grid(which="minor", color="white", lw=0.4)
+    ax.tick_params(which="minor", length=0)
+
+    step = max(1, n_q // 24)
+    ax.set_xticks(np.arange(0, n_q, step))
+    ax.set_xticklabels(np.arange(1, n_q + 1, step))
+    ax.set_yticks(range(max_rank))
+    ax.set_yticklabels(range(1, max_rank + 1))
+    ax.set_xlabel("Query 编号"); ax.set_ylabel("正确文档排名")
+    ax.set_title("排序分布热力图")
+
+    hits = (~np.isnan(grid)).sum(axis=1)
+    ax_m.barh(np.arange(max_rank), hits, height=0.72,
+              color=plt.cm.Reds(np.linspace(0.35, 0.85, max_rank)),
+              edgecolor="white", lw=0.5)
+    for y, c in enumerate(hits):
+        if c:
+            ax_m.text(c + 0.3, y, str(int(c)), va="center",
+                      fontsize=8.5, color="0.35")
+    ax_m.set_xlim(0, max(hits.max(), 1) * 1.18)
+    ax_m.set_xlabel("命中 Query 数")
+    ax_m.tick_params(labelleft=False)
+
+    hit_rate = hits.sum() / len(rows) * 100
+    ax.text(0.98, 0.03, f"Hit@{max_rank} = {hit_rate:.1f}%",
+            transform=ax.transAxes, ha="right", va="bottom", fontsize=11,
+            bbox=dict(boxstyle="round,pad=0.3", fc="white", ec="0.8"))
+    save(fig, "fig3_rank_heatmap.svg")
+
+
+# ── 图4 PR 曲线（1:1）：等 F1 参考线 ──
+def fig4():
+    d = load("pr_curve.json")
+    pts = sorted(d["points"], key=lambda p: p["recall"])   # 保证单调可绘
+    r = np.array([p["recall"] for p in pts])
+    p = np.array([p["precision"] for p in pts])
+
+    fig, ax = plt.subplots(figsize=(5.4, 5.4))
+    x = np.linspace(1e-4, 1, 300)
+    for f1 in (0.2, 0.4, 0.6, 0.8):                 # 等F1参考线（sklearn风格）
+        y = f1 * x / (2 * x - f1)
+        m = (y > 0) & (y <= 1)
+        ax.plot(x[m], y[m], lw=0.7, color="#C9C9C9", zorder=0)
+        ax.text(0.99, f1 / (2 - f1) + 0.008, f"F1={f1}", fontsize=7.5,
+                color="#AAAAAA", ha="right", va="bottom")
+    ax.fill_between(r, p, color=C_BLUE_L, alpha=0.35, lw=0)
+    ax.plot(r, p, lw=2.6, c=C_BLUE, marker="o", ms=3.5, mec="white", mew=0.6)
+    ax.text(0.05, 0.95, f"AUC-PR = {d['auc_pr']:.3f}",
+            transform=ax.transAxes, va="top", fontsize=11.5,
+            bbox=dict(boxstyle="round,pad=0.35", fc="white", ec="0.8"))
+    ax.set_xlim(0, 1.02); ax.set_ylim(0, 1.02)
+    ax.set_xlabel("Recall"); ax.set_ylabel("Precision")
+    ax.set_title("Precision-Recall 曲线")
+    save(fig, "fig4_pr_curve.svg")
+
+
+# ── 图5 Chunk 矩阵（4:3）──
+def fig5():
+    d = load("chunk_matrix.json")
+    by_key = {(r["size"], r["overlap"]): r for r in d["matrix"]}
+    sizes, overlaps = [300, 500], [128, 256]
+    grid = np.full((2, 2), np.nan)
+    for i, s in enumerate(sizes):
+        for j, o in enumerate(overlaps):
+            r = by_key.get((s, o))
+            if r:
+                grid[j, i] = r["recall_at_10"]
+
+    fig, ax = plt.subplots(figsize=(5.6, 4.6))
+    ax.grid(False)
+    im = ax.imshow(grid, cmap="Reds", vmin=0.5, vmax=1.0)
+    ax.set_xticks(np.arange(-.5, 2, 1), minor=True)
+    ax.set_yticks(np.arange(-.5, 2, 1), minor=True)
+    ax.grid(which="minor", color="white", lw=2)
+    ax.tick_params(which="minor", length=0)
+    ax.set_xticks(range(2)); ax.set_xticklabels([str(s) for s in sizes])
+    ax.set_yticks(range(2)); ax.set_yticklabels([str(o) for o in overlaps])
+    ax.set_xlabel("Chunk Size"); ax.set_ylabel("Overlap")
+    for i in range(2):
+        for j in range(2):
+            v = grid[j, i]
+            if np.isnan(v):
+                txt, c = "-", "black"
+            else:
+                txt = f"{v:.3f}"
+                c = "white" if v > 0.8 else "black"
+            ax.text(i, j, txt, ha="center", va="center", fontsize=14, color=c)
+    cb = fig.colorbar(im, ax=ax, ticks=np.arange(0.5, 1.01, 0.1))
+    cb.set_label("Recall@10"); cb.outline.set_linewidth(0.8)
+    ax.set_title("Chunk Size × Overlap 检索效果")
+    save(fig, "fig5_chunk_matrix.svg")
+
+
+# ── 图6 排名迁移散点（1:1）：修正为标准 before/after 布局 ──
+def fig6():
+    rows = load("rank_migration.json")
+    pairs = [(m["rank_before"], m["rank_after"]) for m in rows
+             if m["rank_before"] is not None and m["rank_after"] is not None]
+    b = np.array([p[0] for p in pairs], float)
+    a = np.array([p[1] for p in pairs], float)
+    lim = int(max(b.max(), a.max())) + 1
+
+    rng = np.random.default_rng(7)
+    jx = rng.uniform(-0.28, 0.28, len(b))
+    jy = rng.uniform(-0.28, 0.28, len(b))
+    up, down = a < b, a > b
+
+    fig, ax = plt.subplots(figsize=(5.8, 5.8))
+    ax.plot([0, lim], [0, lim], ls="--", lw=1.1, color=NEUTRAL, zorder=1)
+    for m, c, lab in [(~up & ~down, C_GREY, f"不变 ({(~up & ~down).sum()})"),
+                      (down, C_BLUE, f"下降 ({down.sum()})"),
+                      (up, C_RED, f"提升 ({up.sum()})")]:
+        ax.scatter(b[m] + jx[m], a[m] + jy[m], s=46, c=c,
+                   edgecolor="black", linewidth=0.5, alpha=0.85,
+                   label=lab, zorder=3)
+    ax.text(lim * 0.93, lim * 0.35, "提升区", color=C_RED, fontsize=11,
+            ha="right", style="italic", alpha=0.85)
+    ax.text(lim * 0.07, lim * 0.93, "下降区", color=C_BLUE, fontsize=11,
+            ha="left", style="italic", alpha=0.85)
+    ax.text(0.03, 0.97, f"n = {len(pairs)}    提升率 = {up.sum()/len(pairs)*100:.1f}%",
+            transform=ax.transAxes, va="top", fontsize=10.5,
+            bbox=dict(boxstyle="round,pad=0.3", fc="white", ec="0.8"))
+    ax.legend(loc="lower right", handletextpad=0.2)
+    step = max(1, round(lim / 8))
+    ax.set_xticks(range(0, lim + 1, step)); ax.set_yticks(range(0, lim + 1, step))
+    ax.set_xlim(-0.5, lim); ax.set_ylim(-0.5, lim)
+    ax.set_xlabel("Rerank 前排名"); ax.set_ylabel("Rerank 后排名")
+    ax.set_title("重排器排名迁移（对角线下方 = 提升）")
+    save(fig, "fig6_rank_migration.svg")
+
+
+# ── 图7 噪声鲁棒性：真正瀑布图（16:9）──
+def fig7():
+    d = load("noise_decay.json")
+    order = ["标准", "错别字", "口语化", "截断", "指代"]
+    labels = [k for k in order if d["summary"].get(k) is not None]
+    vals = [d["summary"][k] for k in labels]
+    base = vals[0]
+
+    fig, ax = plt.subplots(figsize=(9.6, 5.0))
+    ax.grid(axis="y")
+    ax.axhline(base, ls=":", lw=1, color=NEUTRAL, zorder=1)
+    ax.bar(0, base, 0.58, color=C_BLUE, zorder=3)
+    ax.text(0, base + 0.015, f"{base:.3f}", ha="center", fontsize=11,
+            fontweight="bold")
+    for i, v in enumerate(vals[1:], 1):
+        drop = base - v
+        if abs(drop) < 1e-9:
+            ax.bar(i, 0.006, 0.58, bottom=base - 0.003, color=C_GREY, zorder=3)
+            ax.text(i, base + 0.015, "±0.00", ha="center", fontsize=10.5,
+                    color=C_GREY_D)
+        else:
+            bottom, h = (v, drop) if drop > 0 else (base, -drop)
+            face = C_RED_L if drop > 0 else "#BFE3D0"
+            edge = C_RED if drop > 0 else "#007A5E"
+            ax.bar(i, h, 0.58, bottom=bottom, color=face, edgecolor=edge,
+                   lw=1.0, zorder=3)
+            ax.text(i, bottom + h / 2,
+                    f"{'-' if drop > 0 else '+'}{abs(drop):.3f}",
+                    ha="center", va="center", fontsize=10.5,
+                    fontweight="bold", color=edge)
+            if drop > 0:
+                ax.text(i, v - 0.02, f"{v:.3f}", ha="center", va="top",
+                        fontsize=10, color=C_GREY_D)
+            else:
+                ax.text(i, v + 0.02, f"{v:.3f}", ha="center", va="bottom",
+                        fontsize=10, color=C_GREY_D)
+    ax.set_xticks(range(len(labels))); ax.set_xticklabels(labels)
+    ax.set_ylim(0, 1.08)
+    ax.set_ylabel("Recall@5")
+    ax.set_title("噪声鲁棒性：相对标准查询的性能衰减")
+    save(fig, "fig7_noise_waterfall.svg")
+
+
+# ── 图8 小提琴 + 散点 + IQR（4:3）──
+def fig8():
+    d = load("mrr.json")
+    data = [np.array([r[s] for r in d["rows"]]) for s in d["strategies"]]
+    fig, ax = plt.subplots(figsize=(6.4, 4.8))
+    ax.grid(axis="y")
+    pos = np.arange(len(data))
+    parts = ax.violinplot(data, positions=pos, widths=0.7,
+                          showmeans=False, showmedians=False, showextrema=False)
+    for i, body in enumerate(parts["bodies"]):
+        body.set_facecolor(STRAT_COLORS[i % len(STRAT_COLORS)])
+        body.set_edgecolor("black"); body.set_linewidth(0.8); body.set_alpha(0.9)
+    for i, v in enumerate(data):
+        q1, med, q3 = np.percentile(v, [25, 50, 75])
+        rng = np.random.default_rng(i)
+        jx = rng.uniform(-0.07, 0.07, len(v))
+        ax.scatter(np.full(len(v), i) + jx, v, s=22, color=STRAT_COLORS[i],
+                   edgecolor="black", linewidth=0.4, alpha=0.8, zorder=3)
+        ax.vlines(i, q1, q3, color="black", lw=5, alpha=0.75, zorder=4)  # IQR
+        ax.plot([i - 0.12, i + 0.12], [med, med], color="white", lw=2,
+                zorder=5)                                                 # 中位数
+        ax.scatter(i, v.mean(), marker="D", s=30, color="black", zorder=6)
+        ax.text(i + 0.26, v.mean(), f"{v.mean():.3f}", fontsize=10,
+                va="center")
+    ax.set_xticks(pos); ax.set_xticklabels(d["strategies"])
+    ax.set_ylabel("RR"); ax.set_ylim(-0.02, 1.1)
+    ax.set_title("各检索策略 RR 分布\n（箱体：IQR，白线：中位数，◆：均值）",
+                 fontsize=12)
+    save(fig, "fig8_mrr_violin.svg")
+
+
+# ── 图9（新增）策略配对胜率矩阵 ──
+def fig9():
+    d = load("mrr.json")
+    S = d["strategies"]
+    R = np.array([[r[s] for r in d["rows"]] for s in S])   # S × N
+    n = len(S)
+    win = np.zeros((n, n)); tie = np.zeros((n, n))
+    for i in range(n):
+        for j in range(n):
+            diff = R[i] - R[j]
+            win[i, j] = np.mean(diff > 1e-9)
+            tie[i, j] = np.mean(np.abs(diff) <= 1e-9)
+
+    fig, ax = plt.subplots(figsize=(5.4, 4.6))
+    ax.grid(False)
+    im = ax.imshow(win, cmap="RdBu_r", vmin=0, vmax=1)
+    for i in range(n):
+        for j in range(n):
+            if i == j:
+                ax.text(j, i, "—", ha="center", va="center",
+                        color="0.6", fontsize=13)
+            else:
+                w = win[i, j]
+                ax.text(j, i, f"{w:.2f}\n(平 {tie[i, j]:.2f})",
+                        ha="center", va="center", fontsize=10,
+                        color="white" if (w > 0.75 or w < 0.25) else "black")
+    ax.set_xticks(range(n)); ax.set_xticklabels(S)
+    ax.set_yticks(range(n)); ax.set_yticklabels(S)
+    ax.set_xlabel("对比策略 j"); ax.set_ylabel("策略 i")
+    ax.set_title("行策略对列策略的逐 Query 胜率")
+    cb = fig.colorbar(im, ax=ax, shrink=0.85)
+    cb.set_label("胜率 P(RR_i > RR_j)")
+    save(fig, "fig9_pairwise_winrate.svg")
+
+
+# ── 图10（新增）MRR 均值 + 95% Bootstrap CI ──
+def fig10(n_boot=2000, seed=42):
+    d = load("mrr.json")
+    S = d["strategies"]
+    rng = np.random.default_rng(seed)
+
+    fig, ax = plt.subplots(figsize=(6.0, 4.4))
+    ax.grid(axis="y")
+    for i, s in enumerate(S):
+        v = np.array([r[s] for r in d["rows"]])
+        idx = rng.integers(0, len(v), (n_boot, len(v)))
+        boots = v[idx].mean(axis=1)
+        lo, hi = np.percentile(boots, [2.5, 97.5])
+        m = v.mean()
+        ax.bar(i, m, 0.52, color=STRAT_COLORS[i % len(STRAT_COLORS)],
+               edgecolor="black", lw=0.7, zorder=3)
+        ax.errorbar(i, m, yerr=[[m - lo], [hi - m]], fmt="none",
+                    ecolor="black", elinewidth=1.2, capsize=5,
+                    capthick=1.2, zorder=4)
+        ax.text(i, hi + 0.025, f"{m:.3f}", ha="center", fontsize=11,
+                fontweight="bold")
+        ax.text(i, 0.015, f"n={len(v)}", ha="center", fontsize=8.5, color="0.45")
+    ax.set_xticks(range(len(S))); ax.set_xticklabels(S)
+    ax.set_ylim(0, 1.05)
+    ax.set_ylabel("MRR")
+    ax.set_title(f"各策略 MRR（误差条：95% Bootstrap CI，B={n_boot}）")
+    save(fig, "fig10_mrr_ci.svg")
+
+
+if __name__ == "__main__":
+    fig1(); fig2(); fig3(); fig4(); fig6(); fig7(); fig8()
+    fig9(); fig10()                     # 仅依赖 mrr.json，可直接运行
+    if (DATA / "chunk_matrix.json").exists():
+        fig5()
+    print("完成")

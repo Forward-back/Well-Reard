@@ -1,0 +1,308 @@
+package service
+
+import (
+	"context"
+	"fmt"
+	"os"
+	"sort"
+	"strings"
+	"sync"
+	"time"
+
+	"gaze/internal/engine"
+	werrors "gaze/internal/errors"
+	"gaze/internal/logger"
+	"gaze/internal/types"
+	"gaze/internal/types/interfaces"
+	"github.com/robfig/cron/v3"
+)
+
+// engineSyncTimeout bounds one YLSW re-ingest (embedding included).
+const engineSyncTimeout = 10 * time.Minute
+
+// EngineSyncService re-pushes app-side chunk edits to YLSW. CR acceptance only
+// flags engine_sync_status=pending; the actual push runs here so the HTTP path
+// never blocks on document conversion. Two triggers:
+//   - an admin button (TriggerKBSync) for one document or every pending doc in a KB;
+//   - a tenant-level daily sweep (config default off), started by Start.
+type EngineSyncService struct {
+	knowledgeRepo interfaces.KnowledgeRepository
+	chunkRepo     interfaces.ChunkRepository
+	kbService     interfaces.KnowledgeBaseService
+	tenantRepo    interfaces.TenantRepository
+	ragEngine     engine.RAGEngine
+
+	cron    *cron.Cron
+	mu      sync.Mutex
+	started bool
+	running map[string]struct{}
+}
+
+// NewEngineSyncService creates the resync service.
+func NewEngineSyncService(
+	knowledgeRepo interfaces.KnowledgeRepository,
+	chunkRepo interfaces.ChunkRepository,
+	kbService interfaces.KnowledgeBaseService,
+	tenantRepo interfaces.TenantRepository,
+	ragEngine engine.RAGEngine,
+) *EngineSyncService {
+	return &EngineSyncService{
+		knowledgeRepo: knowledgeRepo,
+		chunkRepo:     chunkRepo,
+		kbService:     kbService,
+		tenantRepo:    tenantRepo,
+		ragEngine:     ragEngine,
+		running:       make(map[string]struct{}),
+		cron: cron.New(cron.WithSeconds(), cron.WithChain(
+			cron.Recover(cron.DefaultLogger),
+		)),
+	}
+}
+
+// TriggerKBSync flags the given documents (all pending/failed docs in the KB
+// when knowledgeIDs is empty) and pushes them in the background. Admin only:
+// re-ingesting rewrites what the retrieval engine sees for the whole KB.
+func (s *EngineSyncService) TriggerKBSync(
+	ctx context.Context, kbID string, knowledgeIDs []string,
+) (int, error) {
+	kb, err := s.kbService.GetKnowledgeBaseByID(ctx, kbID)
+	if err != nil || kb == nil {
+		return 0, werrors.NewNotFoundError("知识库不存在")
+	}
+	if !canModerateDoc(ctx, kb) {
+		return 0, werrors.NewForbiddenError("仅管理员可触发文档重推")
+	}
+
+	targets := make([]*types.Knowledge, 0, len(knowledgeIDs))
+	if len(knowledgeIDs) == 0 {
+		targets, err = s.knowledgeRepo.ListKnowledgeByEngineSyncStatus(
+			ctx, kb.ID,
+			[]string{types.EngineSyncStatusPending, types.EngineSyncStatusFailed},
+		)
+		if err != nil {
+			return 0, werrors.NewInternalServerError("读取待重推文档失败")
+		}
+	} else {
+		seen := make(map[string]struct{}, len(knowledgeIDs))
+		for _, id := range knowledgeIDs {
+			id = strings.TrimSpace(id)
+			if id == "" {
+				continue
+			}
+			if _, dup := seen[id]; dup {
+				continue
+			}
+			seen[id] = struct{}{}
+			knowledge, err := s.knowledgeRepo.GetKnowledgeByIDOnly(ctx, id)
+			if err != nil || knowledge == nil ||
+				knowledge.KnowledgeBaseID != kb.ID || knowledge.TenantID != kb.TenantID {
+				return 0, werrors.NewValidationError("文档不属于该知识库")
+			}
+			targets = append(targets, knowledge)
+		}
+	}
+
+	baseCtx := context.WithoutCancel(ctx)
+	for _, knowledge := range targets {
+		if err := s.knowledgeRepo.MarkEngineSyncPending(ctx, knowledge.TenantID, knowledge.ID); err != nil {
+			logger.Warnf(ctx, "[EngineSync] mark pending failed for knowledge %s: %v", knowledge.ID, err)
+			continue
+		}
+		go func(k *types.Knowledge) {
+			if err := s.syncOne(baseCtx, k); err != nil {
+				logger.Warnf(baseCtx, "[EngineSync] resync knowledge %s failed: %v", k.ID, err)
+			}
+		}(knowledge)
+	}
+	return len(targets), nil
+}
+
+// Start registers the daily sweep. The cron always runs; each tenant decides
+// via EngineSyncConfig.Enabled. Kill switch: GAZE_ENGINE_SYNC_CRON_ENABLED=0.
+func (s *EngineSyncService) Start(ctx context.Context) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.started {
+		return nil
+	}
+	if !engineSyncCronEnabled() {
+		logger.Infof(ctx, "[EngineSync] daily sweep disabled via GAZE_ENGINE_SYNC_CRON_ENABLED=false")
+		return nil
+	}
+	if _, err := s.cron.AddFunc("0 30 3 * * *", func() {
+		s.runDaily(context.Background())
+	}); err != nil {
+		return err
+	}
+	s.cron.Start()
+	s.started = true
+	logger.Infof(ctx, "[EngineSync] daily sweep registered (03:30)")
+	return nil
+}
+
+// Stop halts the cron scheduler. Idempotent.
+func (s *EngineSyncService) Stop() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if !s.started {
+		return
+	}
+	c := s.cron.Stop()
+	<-c.Done()
+	s.started = false
+}
+
+// runDaily pushes every pending/failed document whose tenant opted in. Per-
+// tenant check keeps the default-off contract: a tenant that never enabled
+// the switch accumulates pending markers until an admin presses the button.
+func (s *EngineSyncService) runDaily(ctx context.Context) {
+	rows, err := s.knowledgeRepo.ListKnowledgeByEngineSyncStatus(
+		ctx, "",
+		[]string{types.EngineSyncStatusPending, types.EngineSyncStatusFailed},
+	)
+	if err != nil {
+		logger.Warnf(ctx, "[EngineSync] list pending documents failed: %v", err)
+		return
+	}
+	tenantEnabled := make(map[uint64]bool)
+	var synced int
+	for _, knowledge := range rows {
+		if knowledge == nil {
+			continue
+		}
+		enabled, ok := tenantEnabled[knowledge.TenantID]
+		if !ok {
+			tenant, err := s.tenantRepo.GetTenantByID(ctx, knowledge.TenantID)
+			enabled = err == nil && tenant != nil &&
+				tenant.EngineSyncConfig != nil && tenant.EngineSyncConfig.Enabled
+			tenantEnabled[knowledge.TenantID] = enabled
+		}
+		if !enabled {
+			continue
+		}
+		if err := s.syncOne(ctx, knowledge); err != nil {
+			logger.Warnf(ctx, "[EngineSync] daily resync knowledge %s failed: %v", knowledge.ID, err)
+			continue
+		}
+		synced++
+	}
+	if synced > 0 {
+		logger.Infof(ctx, "[EngineSync] daily sweep re-pushed %d documents", synced)
+	}
+}
+
+// syncOne rebuilds markdown from the current chunks and re-ingests with the
+// same document ID (YLSW /ingest is an idempotent rebuild). Concurrent pushes
+// for the same document are collapsed to one.
+func (s *EngineSyncService) syncOne(ctx context.Context, knowledge *types.Knowledge) error {
+	if knowledge == nil || knowledge.ID == "" || knowledge.TenantID == 0 {
+		return nil
+	}
+	key := fmt.Sprintf("%d/%s", knowledge.TenantID, knowledge.ID)
+	s.mu.Lock()
+	if _, busy := s.running[key]; busy {
+		s.mu.Unlock()
+		return nil
+	}
+	s.running[key] = struct{}{}
+	s.mu.Unlock()
+	defer func() {
+		s.mu.Lock()
+		delete(s.running, key)
+		s.mu.Unlock()
+	}()
+
+	now := time.Now()
+	fail := func(err error) error {
+		if updErr := s.knowledgeRepo.UpdateEngineSyncStatus(
+			ctx, knowledge.TenantID, knowledge.ID, types.EngineSyncStatusFailed,
+			err.Error(), &now,
+		); updErr != nil {
+			logger.Warnf(ctx, "[EngineSync] record failure for knowledge %s failed: %v", knowledge.ID, updErr)
+		}
+		return err
+	}
+
+	if s.ragEngine == nil {
+		return fail(fmt.Errorf("RAG engine 未配置"))
+	}
+	kb, err := s.kbService.GetKnowledgeBaseByID(ctx, knowledge.KnowledgeBaseID)
+	if err != nil || kb == nil || kb.TenantID != knowledge.TenantID {
+		return fail(fmt.Errorf("知识库不存在或已变更"))
+	}
+	chunks, err := s.chunkRepo.ListChunksByKnowledgeID(ctx, knowledge.TenantID, knowledge.ID)
+	if err != nil {
+		return fail(fmt.Errorf("读取文档分块失败: %w", err))
+	}
+	markdown := buildEngineMarkdown(chunks)
+	if markdown == "" {
+		return fail(fmt.Errorf("文档没有可同步的分块"))
+	}
+
+	pushCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), engineSyncTimeout)
+	defer cancel()
+	if err := s.ragEngine.IngestDocument(
+		pushCtx, kb.ID, knowledge.ID, knowledge.FileName, knowledge.FileType,
+		markdown, nil, toEngineIngestChunks(chunks), buildEngineDocumentMetadata(knowledge),
+	); err != nil {
+		return fail(err)
+	}
+	completedAt := time.Now()
+	if err := s.knowledgeRepo.UpdateEngineSyncStatus(
+		ctx, knowledge.TenantID, knowledge.ID, types.EngineSyncStatusSynced, "", &completedAt,
+	); err != nil {
+		return err
+	}
+	logger.Infof(ctx, "[EngineSync] knowledge %s re-pushed (%d chunks)", knowledge.ID, len(chunks))
+	return nil
+}
+
+// buildEngineMarkdown concatenates enabled text chunks in chunk_index order.
+// Disabled chunks are user-removed content and stay out of the engine.
+func buildEngineMarkdown(chunks []*types.Chunk) string {
+	parts := make([]string, 0, len(chunks))
+	for _, chunk := range chunks {
+		if chunk == nil || !chunk.IsEnabled {
+			continue
+		}
+		content := strings.TrimSpace(chunk.Content)
+		if content == "" {
+			continue
+		}
+		parts = append(parts, content)
+	}
+	return strings.Join(parts, "\n\n")
+}
+
+// toEngineIngestChunks mirrors enabled app chunks for YLSW's app-owner map.
+func toEngineIngestChunks(chunks []*types.Chunk) []engine.IngestChunk {
+	out := make([]engine.IngestChunk, 0, len(chunks))
+	for _, chunk := range chunks {
+		if chunk == nil || !chunk.IsEnabled || strings.TrimSpace(chunk.Content) == "" {
+			continue
+		}
+		out = append(out, engine.IngestChunk{
+			ID:         chunk.ID,
+			ChunkIndex: chunk.ChunkIndex,
+			StartAt:    chunk.StartAt,
+			EndAt:      chunk.EndAt,
+			Content:    chunk.Content,
+		})
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].ChunkIndex < out[j].ChunkIndex })
+	return out
+}
+
+// engineSyncCronEnabled mirrors ylswReconcileEnabled(): default on, opt-out
+// via GAZE_ENGINE_SYNC_CRON_ENABLED=0/false/off/no.
+func engineSyncCronEnabled() bool {
+	v := strings.TrimSpace(os.Getenv("GAZE_ENGINE_SYNC_CRON_ENABLED"))
+	if v == "" {
+		return true
+	}
+	switch strings.ToLower(v) {
+	case "0", "false", "off", "no":
+		return false
+	}
+	return true
+}

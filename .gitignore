@@ -1,0 +1,42 @@
+# Secrets and local environment
+.env
+.env.*
+**/.env
+**/.env.*
+!**/.env.example
+!**/.env.lite.example
+
+# Dependencies and build output
+**/node_modules/
+**/dist/
+**/build/
+**/*.tsbuildinfo
+app/tmp/
+app/Gaze
+app/Gaze-lite
+app/web/
+
+# Python runtime and caches
+**/__pycache__/
+**/*.pyc
+**/.venv/
+**/.venv-*/
+**/*.egg-info/
+**/.pytest_cache/
+**/.mypy_cache/
+
+# RAG local data (inside repo, not versioned)
+/data/
+/backups/
+rag/data/
+rag/models/
+rag/faiss_index.bin
+rag/src_backup_*/
+**/*.bak_*
+
+# Local design tool workdirs
+.archify/
+.diagram-design-work/
+
+# Logs
+**/*.log

@@ -1,0 +1,356 @@
+# 精简版部署（银联商务 RAG 融合项目）
+# 服务：frontend + app + docreader + postgres + redis + ylsw（YLSW 检索引擎）
+# 已移除：sandbox / odl-hybrid / searxng / minio / neo4j / qdrant / milvus /
+#         weaviate / doris / dex / langfuse / mcp 及配套 volume
+# 原完整版见 docker-compose.full.yml.bak
+name: app
+services:
+  frontend:
+    image: gaze-ui:${GAZE_VERSION:-latest}
+    build:
+      context: ../frontend
+      additional_contexts:
+        contracts: ../app/contracts
+      args:
+        VITE_FRONTEND_COMMIT: ${VITE_FRONTEND_COMMIT:-unknown}
+        NPM_REGISTRY: ${NPM_REGISTRY:-}
+        NODE_MAX_OLD_SPACE_SIZE: ${NODE_MAX_OLD_SPACE_SIZE:-4096}
+    container_name: Gaze-frontend
+    ports:
+      - "${FRONTEND_PORT:-6151}:80"
+    environment:
+      - MAX_FILE_SIZE_MB=${MAX_FILE_SIZE_MB:-50}
+      - DEFAULT_LOCALE=${DEFAULT_LOCALE:-}
+      - APP_HOST=${APP_HOST:-app}
+      - APP_PORT=${APP_BACKEND_PORT:-8080}
+      - APP_SCHEME=${APP_SCHEME:-http}
+    depends_on:
+      app:
+        condition: service_healthy
+    networks:
+      - Gaze-network
+    restart: unless-stopped
+
+  app:
+    image: gaze-app:${GAZE_VERSION:-latest}
+    build:
+      context: ../app
+      dockerfile: docker/Dockerfile.app
+      args:
+        - APK_MIRROR_ARG=${APK_MIRROR_ARG:-}
+        - WITH_ANYDOC=${WITH_ANYDOC:-1}
+        - GOPROXY_ARG=${GOPROXY_ARG:-https://goproxy.cn,direct}
+    container_name: Gaze-app
+    ports:
+      - "${APP_PORT:-6152}:8080"
+    volumes:
+      - data-files:/data/files
+      - docreader-tmp:/tmp/docreader:ro
+      - ../app/config/config.yaml:/app/config/config.yaml
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+    env_file:
+      - .env
+    environment:
+      # ========== 日志 ==========
+      - LOG_LEVEL=${LOG_LEVEL:-debug}
+      - LOG_PATH=${LOG_PATH:-}
+      - LOG_FORMAT=${LOG_FORMAT:-}
+      - LLM_DEBUG_LOG=${LLM_DEBUG_LOG:-false}
+      # ========== 运行时基础 ==========
+      - GIN_MODE=${GIN_MODE:-release}
+      - TZ=${TZ:-Asia/Shanghai}
+      - GAZE_LANGUAGE=${GAZE_LANGUAGE:-}
+      - AUTO_MIGRATE=${AUTO_MIGRATE:-true}
+      - APP_EXTERNAL_URL=${APP_EXTERNAL_URL:-}
+      - FRONTEND_BASE_URL=${FRONTEND_BASE_URL:-}
+      # 认证 / 空间 / RBAC / 审计
+      - DISABLE_REGISTRATION=${DISABLE_REGISTRATION:-false}
+      - GAZE_AUTH_COMPLEX_PASSWORD_ENABLED=${GAZE_AUTH_COMPLEX_PASSWORD_ENABLED:-false}
+      - GAZE_AUTH_DEFAULT_TENANT_MODE=${GAZE_AUTH_DEFAULT_TENANT_MODE:-create_personal}
+      - GAZE_TENANT_SELF_SERVICE_CREATION_ENABLED=${GAZE_TENANT_SELF_SERVICE_CREATION_ENABLED:-true}
+      - GAZE_TENANT_ENABLE_CROSS_TENANT_ACCESS=${GAZE_TENANT_ENABLE_CROSS_TENANT_ACCESS:-false}
+      - GAZE_TENANT_DEFAULT_STORAGE_QUOTA_GB=${GAZE_TENANT_DEFAULT_STORAGE_QUOTA_GB:-10}
+      - GAZE_INVITATION_TTL=${GAZE_INVITATION_TTL:-168h}
+      - GAZE_AUDIT_RETENTION_DAYS=${GAZE_AUDIT_RETENTION_DAYS:-90}
+      # 数据库设置
+      - DB_DRIVER=${DB_DRIVER:-postgres}
+      - DB_HOST=${DB_HOST:-postgres}
+      - DB_PORT=${DB_PORT:-5432}
+      - DB_USER=${DB_USER:-}
+      - DB_PASSWORD=${DB_PASSWORD:-}
+      - DB_NAME=${DB_NAME:-}
+      # Docreader 解析
+      - DOCREADER_ADDR=${DOCREADER_ADDR:-docreader:50051}
+      - DOCREADER_TRANSPORT=${DOCREADER_TRANSPORT:-grpc}
+      - GRPC_TLS_ENABLED=${GRPC_TLS_ENABLED:-false}
+      - GRPC_TLS_CERT=${GRPC_TLS_CERT:-}
+      - GRPC_TLS_KEY=${GRPC_TLS_KEY:-}
+      - GRPC_TLS_CA=${GRPC_TLS_CA:-}
+      - GRPC_TLS_SERVER_NAME=${GRPC_TLS_SERVER_NAME:-}
+      - GRPC_AUTH_TOKEN=${GRPC_AUTH_TOKEN:-}
+      # ========== 文件存储（local） ==========
+      - STORAGE_TYPE=${STORAGE_TYPE:-local}
+      - LOCAL_STORAGE_BASE_DIR=${LOCAL_STORAGE_BASE_DIR:-/data/files}
+      - LOCAL_STORAGE_PATH_PREFIX=${LOCAL_STORAGE_PATH_PREFIX:-}
+      - AUTO_RECOVER_DIRTY=${AUTO_RECOVER_DIRTY:-true}
+      # ========== 检索（仅 postgres+pgvector） ==========
+      - RETRIEVE_DRIVER=${RETRIEVE_DRIVER:-postgres}
+      # ========== YLSW 检索引擎（银联商务 RAG 侧车） ==========
+      - YLSW_BASE_URL=${YLSW_BASE_URL:-http://ylsw:5000}
+      # 服务间共享密钥（§2.13 P2，与 ylsw 服务同值；空=不启用）
+      - YLSW_ENGINE_TOKEN=${YLSW_ENGINE_TOKEN:-}
+      # ========== 员工表校验(注册工号):银联商务业务 MySQL ==========
+      # 注意:app 容器内的 YLSW_MYSQL_DATABASE 指向员工表库(ylsw 服务的 RAG 库走 YLSW_MYSQL_DATABASE 宿主变量)
+      - YLSW_MYSQL_HOST=${YLSW_MYSQL_HOST:-host.docker.internal}
+      - YLSW_MYSQL_PORT=${YLSW_MYSQL_PORT:-3306}
+      - YLSW_MYSQL_USER=${YLSW_MYSQL_USER:-root}
+      - YLSW_MYSQL_PASSWORD=${YLSW_MYSQL_PASSWORD:-}
+      - YLSW_MYSQL_DATABASE=${YLSW_EMPLOYEE_DB:-ums_employee}
+      # ========== 向量库杂项 ==========
+      - BATCH_EMBED_SIZE=${BATCH_EMBED_SIZE:-}
+      - VLM_HTTP_TIMEOUT_SECONDS=${VLM_HTTP_TIMEOUT_SECONDS:-}
+      - GAZE_LLM_STREAM_RAW_DUMP=${GAZE_LLM_STREAM_RAW_DUMP:-}
+      - GAZE_LLM_STREAM_RAW_DUMP_DIR=${GAZE_LLM_STREAM_RAW_DUMP_DIR:-}
+      - STREAM_MANAGER_TYPE=${STREAM_MANAGER_TYPE:-}
+      # Redis
+      - REDIS_ADDR=${REDIS_ADDR:-redis:6379}
+      - REDIS_USERNAME=${REDIS_USERNAME:-}
+      - REDIS_PASSWORD=${REDIS_PASSWORD:-}
+      - REDIS_DB=${REDIS_DB:-}
+      - REDIS_PREFIX=${REDIS_PREFIX:-}
+      - GAZE_REDIS_NAMESPACE=${GAZE_REDIS_NAMESPACE:-}
+      - GAZE_REDIS_OP_TIMEOUT_MS=${GAZE_REDIS_OP_TIMEOUT_MS:-}
+      # 安全
+      - SYSTEM_AES_KEY=${SYSTEM_AES_KEY:-}
+      - SSRF_WHITELIST=${SSRF_WHITELIST:-}
+      - IMAGE_HOST_KEEP_URL=${IMAGE_HOST_KEEP_URL:-}
+      - CONCURRENCY_POOL_SIZE=${CONCURRENCY_POOL_SIZE:-5}
+      - JWT_SECRET=${JWT_SECRET:-}
+      - MAX_FILE_SIZE_MB=${MAX_FILE_SIZE_MB:-50}
+      # 文档处理
+      - GAZE_DOCUMENT_PROCESS_TIMEOUT=${GAZE_DOCUMENT_PROCESS_TIMEOUT:-}
+      - GAZE_DOCREADER_CALL_TIMEOUT=${GAZE_DOCREADER_CALL_TIMEOUT:-}
+      - GAZE_HOUSEKEEPING_ENABLED=${GAZE_HOUSEKEEPING_ENABLED:-}
+      - GAZE_CHAT_ATTACHMENT_TTL_HOURS=${GAZE_CHAT_ATTACHMENT_TTL_HOURS:-24}
+      - GAZE_CHAT_ATTACHMENT_WAIT_TIMEOUT_SEC=${GAZE_CHAT_ATTACHMENT_WAIT_TIMEOUT_SEC:-60}
+      - GAZE_CHAT_ATTACHMENT_OCR_CONCURRENCY=${GAZE_CHAT_ATTACHMENT_OCR_CONCURRENCY:-8}
+      - GAZE_CHAT_ATTACHMENT_OCR_MAX_PAGES=${GAZE_CHAT_ATTACHMENT_OCR_MAX_PAGES:-8}
+      # Tenant / RBAC
+      - GAZE_TENANT_ENABLE_RBAC=${GAZE_TENANT_ENABLE_RBAC:-}
+      - GAZE_TENANT_MAX_OWNED_PER_USER=${GAZE_TENANT_MAX_OWNED_PER_USER:-}
+      - GAZE_TENANT_AUTO_CREATE_API_KEY=${GAZE_TENANT_AUTO_CREATE_API_KEY:-}
+      # 银联商务融合版：共享工作区 ID（注册用户统一加入）
+      - GAZE_SHARED_TENANT_ID=${GAZE_SHARED_TENANT_ID:-}
+      # 任务队列
+      - GAZE_ASYNQ_CORE_CONCURRENCY=${GAZE_ASYNQ_CORE_CONCURRENCY:-8}
+      - GAZE_ASYNQ_POSTPROCESS_CONCURRENCY=${GAZE_ASYNQ_POSTPROCESS_CONCURRENCY:-2}
+      - GAZE_ASYNQ_ENRICHMENT_CONCURRENCY=${GAZE_ASYNQ_ENRICHMENT_CONCURRENCY:-12}
+      - GAZE_ASYNQ_MAINTENANCE_CONCURRENCY=${GAZE_ASYNQ_MAINTENANCE_CONCURRENCY:-4}
+      - GAZE_ASYNQ_SHARED_CONCURRENCY=${GAZE_ASYNQ_SHARED_CONCURRENCY:-6}
+      - GAZE_MODEL_MAX_CONCURRENCY=${GAZE_MODEL_MAX_CONCURRENCY:-32}
+      - APK_MIRROR_ARG=${APK_MIRROR_ARG:-}
+      - GAZE_BOOTSTRAP_SYSTEM_ADMIN_EMAIL=${GAZE_BOOTSTRAP_SYSTEM_ADMIN_EMAIL:-}
+      # ========== OIDC 认证（可选） ==========
+      - OIDC_AUTH_ENABLE=${OIDC_AUTH_ENABLE:-false}
+      - OIDC_AUTH_ISSUER_URL=${OIDC_AUTH_ISSUER_URL:-}
+      - OIDC_AUTH_DISCOVERY_URL=${OIDC_AUTH_DISCOVERY_URL:-}
+      - OIDC_AUTH_PROVIDER_DISPLAY_NAME=${OIDC_AUTH_PROVIDER_DISPLAY_NAME:-}
+      - OIDC_AUTH_CLIENT_ID=${OIDC_AUTH_CLIENT_ID:-}
+      - OIDC_AUTH_CLIENT_SECRET=${OIDC_AUTH_CLIENT_SECRET:-}
+      - OIDC_AUTH_AUTHORIZATION_ENDPOINT=${OIDC_AUTH_AUTHORIZATION_ENDPOINT:-}
+      - OIDC_AUTH_TOKEN_ENDPOINT=${OIDC_AUTH_TOKEN_ENDPOINT:-}
+      - OIDC_AUTH_USER_INFO_ENDPOINT=${OIDC_AUTH_USER_INFO_ENDPOINT:-}
+      - OIDC_AUTH_JWKS_URI=${OIDC_AUTH_JWKS_URI:-}
+      - OIDC_AUTH_SCOPES=${OIDC_AUTH_SCOPES:-}
+      - OIDC_USER_INFO_MAPPING_USER_NAME=${OIDC_USER_INFO_MAPPING_USER_NAME:-}
+      - OIDC_USER_INFO_MAPPING_EMAIL=${OIDC_USER_INFO_MAPPING_EMAIL:-}
+      # 飞书云文档解析模式（数据源连接器保留）
+      - FEISHU_DOCX_PARSE_MODE=${FEISHU_DOCX_PARSE_MODE:-export}
+    depends_on:
+      redis:
+        condition: service_started
+      postgres:
+        condition: service_healthy
+      docreader:
+        condition: service_healthy
+      ylsw:
+        condition: service_healthy
+    networks:
+      - Gaze-network
+    restart: unless-stopped
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+
+  docreader:
+    image: gaze-docreader:${GAZE_VERSION:-latest}
+    build:
+      context: ../app
+      dockerfile: docker/Dockerfile.docreader
+      args:
+        - APT_MIRROR=${APT_MIRROR:-}
+    container_name: Gaze-docreader
+    expose:
+      - "50051"
+    volumes:
+      - docreader-tmp:/tmp/docreader
+    environment:
+      - TZ=${TZ:-Asia/Shanghai}
+      - LOG_LEVEL=${LOG_LEVEL:-}
+      - DOCREADER_IMAGE_OUTPUT_DIR=/tmp/docreader
+      - MAX_FILE_SIZE_MB=${MAX_FILE_SIZE_MB:-}
+      - SSRF_WHITELIST=${SSRF_WHITELIST:-}
+      - SSRF_WHITELIST_EXTRA=${SSRF_WHITELIST_EXTRA:-}
+      # ========== gRPC 服务端 TLS / 认证 ==========
+      - GRPC_TLS_ENABLED=${GRPC_TLS_ENABLED:-false}
+      - GRPC_TLS_CERT=${GRPC_TLS_CERT:-}
+      - GRPC_TLS_KEY=${GRPC_TLS_KEY:-}
+      - GRPC_TLS_CA=${GRPC_TLS_CA:-}
+      - GRPC_TLS_SERVER_NAME=${GRPC_TLS_SERVER_NAME:-}
+      - GRPC_MTLS_REQUIRE_CLIENT_CERT=${GRPC_MTLS_REQUIRE_CLIENT_CERT:-false}
+      - GRPC_AUTH_TOKEN=${GRPC_AUTH_TOKEN:-}
+      # ========== gRPC 服务参数 ==========
+      - DOCREADER_GRPC_MAX_WORKERS=${DOCREADER_GRPC_MAX_WORKERS:-4}
+      - DOCREADER_GRPC_MAX_FILE_SIZE_MB=${DOCREADER_GRPC_MAX_FILE_SIZE_MB:-${MAX_FILE_SIZE_MB:-50}}
+      - DOCREADER_GRPC_PORT=${DOCREADER_GRPC_PORT:-50051}
+      # ========== 解析通用 ==========
+      - DOCREADER_DOCX_MAX_PAGES=${DOCREADER_DOCX_MAX_PAGES:-0}
+      - DOCREADER_MARKITDOWN_MAX_WORKERS=${DOCREADER_MARKITDOWN_MAX_WORKERS:-1}
+      - DOCREADER_EXTERNAL_HTTP_PROXY=${DOCREADER_EXTERNAL_HTTP_PROXY:-}
+      - DOCREADER_EXTERNAL_HTTPS_PROXY=${DOCREADER_EXTERNAL_HTTPS_PROXY:-}
+      # ========== PDF 渲染 ==========
+      - DOCREADER_PDF_RENDER_MAX_WORKERS=${DOCREADER_PDF_RENDER_MAX_WORKERS:-1}
+      - DOCREADER_PDF_RENDER_PARALLELISM=${DOCREADER_PDF_RENDER_PARALLELISM:-}
+      - DOCREADER_PDF_RENDER_DPI=${DOCREADER_PDF_RENDER_DPI:-200}
+      - DOCREADER_PDF_JPEG_QUALITY=${DOCREADER_PDF_JPEG_QUALITY:-85}
+      - DOCREADER_PDF_RENDER_MAX_EDGE=${DOCREADER_PDF_RENDER_MAX_EDGE:-2000}
+      - DOCREADER_PDF_FORCE_SCANNED=${DOCREADER_PDF_FORCE_SCANNED:-false}
+      # ========== PDF 版式 / 文本调优 ==========
+      - DOCREADER_PDF_WORD_GAP_WIDTH_RATIO=${DOCREADER_PDF_WORD_GAP_WIDTH_RATIO:-0.4}
+      - DOCREADER_PDF_MARGIN_COL_WIDTH_RATIO=${DOCREADER_PDF_MARGIN_COL_WIDTH_RATIO:-0.12}
+      - DOCREADER_PDF_MIN_HEADING_LINE_CHARS=${DOCREADER_PDF_MIN_HEADING_LINE_CHARS:-8}
+      - DOCREADER_PDF_SANITIZE_TEXT=${DOCREADER_PDF_SANITIZE_TEXT:-true}
+      - DOCREADER_PDF_STRIP_CHART_DEBRIS=${DOCREADER_PDF_STRIP_CHART_DEBRIS:-true}
+      - DOCREADER_PDF_RENDER_VECTOR_FIGURES=${DOCREADER_PDF_RENDER_VECTOR_FIGURES:-true}
+      - DOCREADER_PDF_DETECT_HEADINGS=${DOCREADER_PDF_DETECT_HEADINGS:-}
+      - DOCREADER_PDF_LAYOUT_ORDERING=${DOCREADER_PDF_LAYOUT_ORDERING:-}
+      - DOCREADER_PDF_FILTER_HIDDEN_TEXT=${DOCREADER_PDF_FILTER_HIDDEN_TEXT:-}
+      - DOCREADER_PDF_SCAN_IMAGE_RATIO=${DOCREADER_PDF_SCAN_IMAGE_RATIO:-}
+      - DOCREADER_PDF_SCAN_MIN_CHARS=${DOCREADER_PDF_SCAN_MIN_CHARS:-}
+      - DOCREADER_PDF_EXTRACT_EMBEDDED_IMAGES=${DOCREADER_PDF_EXTRACT_EMBEDDED_IMAGES:-}
+      - DOCREADER_PDF_EMBED_MIN_PIXELS=${DOCREADER_PDF_EMBED_MIN_PIXELS:-}
+      - DOCREADER_PDF_EMBED_MIN_AREA_RATIO=${DOCREADER_PDF_EMBED_MIN_AREA_RATIO:-}
+      - DOCREADER_PDF_EMBED_REPEAT_PAGE_FRAC=${DOCREADER_PDF_EMBED_REPEAT_PAGE_FRAC:-}
+      - DOCREADER_PDF_EMBED_MAX_IMAGES=${DOCREADER_PDF_EMBED_MAX_IMAGES:-}
+      - DOCREADER_PDF_MIN_CHART_REGION_AREA=${DOCREADER_PDF_MIN_CHART_REGION_AREA:-}
+      - DOCREADER_PDF_MIN_CHART_REGION_CHARS=${DOCREADER_PDF_MIN_CHART_REGION_CHARS:-}
+      - DOCREADER_PDF_MAX_CHART_REGION_AREA=${DOCREADER_PDF_MAX_CHART_REGION_AREA:-}
+      - DOCREADER_PDF_MAX_FIGURE_HEIGHT_RATIO=${DOCREADER_PDF_MAX_FIGURE_HEIGHT_RATIO:-}
+    healthcheck:
+      test: ["CMD", "grpc_health_probe", "-addr=localhost:50051"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+    networks:
+      - Gaze-network
+    restart: unless-stopped
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+
+  # YLSW 检索引擎（银联商务 RAG 侧车，Python/Flask，MySQL+FAISS）
+  # 连宿主机 MySQL 3306（YLSW_Service_Table 库）；离线管线关闭——存量走 app 上传路径（§2.2 ②）
+  ylsw:
+    build:
+      context: ../rag
+      args:
+        # 国内网络走镜像代理前缀(与 YLSW 自家 compose 一致)
+        BASE_IMAGE: ${YLSW_BASE_IMAGE:-docker.1ms.run/library/python:3.12-slim}
+    image: gaze-ylsw:${GAZE_VERSION:-latest}
+    container_name: Gaze-ylsw
+    expose:
+      - "5000"
+    environment:
+      - TZ=${TZ:-Asia/Shanghai}
+      - LOG_LEVEL=${LOG_LEVEL:-INFO}
+      - PORT=5000
+      # 离线管线开关：app 栈内 YLSW 为纯检索侧车，不跑 Data/ 存量摄取
+      - RUN_OFFLINE_INGEST=0
+      # 本地语料/模型/FAISS 索引（仓库内 data/rag，gitignore）
+      - RAG_DATA_DIR=/app/external/Data
+      - LOCAL_MODELS_DIR=/app/external/models
+      # ===== 银联商务业务 MySQL（chunks/Text2SQL，宿主机 3306） =====
+      - MYSQL_HOST=${YLSW_MYSQL_HOST:-host.docker.internal}
+      - MYSQL_PORT=${YLSW_MYSQL_PORT:-3306}
+      - MYSQL_USER=${YLSW_MYSQL_USER:-root}
+      - MYSQL_PASSWORD=${YLSW_MYSQL_PASSWORD:-}
+      - MYSQL_DATABASE=${YLSW_MYSQL_DATABASE:-YLSW_Service_Table}
+      # ===== 服务间鉴权（§2.13 P2，与 app 侧 YLSW_ENGINE_TOKEN 一致） =====
+      - YLSW_ENGINE_TOKEN=${YLSW_ENGINE_TOKEN:-}
+      # ===== 重嵌 daemon（§2.2 ④，分钟；<=0 关闭） =====
+      - REEMBED_INTERVAL_MINUTES=${REEMBED_INTERVAL_MINUTES:-30}
+      - KEEPALIVE_INTERVAL=${KEEPALIVE_INTERVAL:-480}
+      # ===== LLM 三件套 =====
+      - BGE_EMBEDDING_URL=${YLSW_BGE_EMBEDDING_URL:-https://api.siliconflow.cn/v1/embeddings}
+      - BGE_API_KEY=${YLSW_BGE_API_KEY:-}
+      - BGE_RERANKER_URL=${YLSW_BGE_RERANKER_URL:-https://api.siliconflow.cn/v1/rerank}
+      - DEEPSEEK_URL=${YLSW_DEEPSEEK_URL:-https://api.deepseek.com/v1/chat/completions}
+      - DEEPSEEK_API_KEY=${YLSW_DEEPSEEK_API_KEY:-}
+      - QWEN_URL=${YLSW_QWEN_URL:-https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions}
+      - QWEN_API_KEY=${YLSW_QWEN_API_KEY:-}
+      - API_TIMEOUT=${YLSW_API_TIMEOUT:-30}
+      - API_MAX_RETRIES=${YLSW_API_MAX_RETRIES:-3}
+    volumes:
+      - ../data/rag:/app/external
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:5000/health', timeout=3).status==200 else 1)"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+    networks:
+      - Gaze-network
+    restart: unless-stopped
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+
+  postgres:
+    image: paradedb/paradedb:v0.22.2-pg17
+    container_name: Gaze-postgres
+    environment:
+      - POSTGRES_USER=${DB_USER}
+      - POSTGRES_PASSWORD=${DB_PASSWORD}
+      - POSTGRES_DB=${DB_NAME}
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    networks:
+      - Gaze-network
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${DB_USER} -d ${DB_NAME}"]
+      interval: 10s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+    restart: unless-stopped
+    stop_grace_period: 1m
+
+  redis:
+    image: redis:7.0-alpine
+    container_name: Gaze-redis
+    command: redis-server --appendonly yes --requirepass ${REDIS_PASSWORD}
+    restart: always
+    networks:
+      - Gaze-network
+
+networks:
+  Gaze-network:
+    driver: bridge
+
+volumes:
+  postgres-data:
+  data-files:
+  docreader-tmp:
