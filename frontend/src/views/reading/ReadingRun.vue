@@ -158,6 +158,16 @@
             />
             <div class="reading-question-meta">
               <t-tag size="small" theme="warning" variant="light">{{ $t('reading.pendingConfirm') }}</t-tag>
+              <t-tag v-if="currentPendingQuestion.kind === 'fact'" size="small" theme="warning" variant="light">
+                {{ $t('reading.questionKind.fact') }}
+              </t-tag>
+              <t-tag v-else-if="currentPendingQuestion.kind === 'decision'" size="small" theme="primary" variant="light">
+                {{ $t('reading.questionKind.decision') }}
+              </t-tag>
+              <t-tag v-if="currentPendingQuestion.gap_type && currentPendingQuestion.gap_type !== 'unclassified'"
+                size="small" variant="outline">
+                {{ $t(`reading.gapTypes.${currentPendingQuestion.gap_type}`) }}
+              </t-tag>
               <span>{{ $t('reading.roundLabel', { round: currentPendingQuestion.round }) }}</span>
             </div>
             <h3>{{ currentPendingQuestion.text }}</h3>
@@ -255,6 +265,13 @@
                   </button>
                 </div>
               </div>
+            </div>
+
+            <div v-if="pauseEachRound && !advancing && run.status === 'reading'" class="reading-round-continue">
+              <t-button theme="primary" :loading="acting" @click="resumeOrAdvance">
+                {{ $t('reading.continueReading') }}
+              </t-button>
+              <p class="reading-hint">{{ $t('reading.roundReviewHint') }}</p>
             </div>
           </template>
         </template>
@@ -377,6 +394,12 @@
                 <div class="reading-open-head">
                   <t-tag size="small" :theme="questionTagTheme(question)" variant="light">
                     {{ questionStatusLabel(question) }}
+                  </t-tag>
+                  <t-tag v-if="question.kind === 'fact'" size="small" theme="warning" variant="light">
+                    {{ $t('reading.questionKind.fact') }}
+                  </t-tag>
+                  <t-tag v-else-if="question.kind === 'decision'" size="small" theme="primary" variant="light">
+                    {{ $t('reading.questionKind.decision') }}
                   </t-tag>
                   <span class="reading-round-tag">{{ $t('reading.roundLabel', { round: question.round }) }}</span>
                 </div>
@@ -647,6 +670,9 @@ const structuredTabs = computed(() => [
   { key: 'open' as const, label: t('reading.tabs.open'), count: openQuestions.value.length },
   { key: 'contradictions' as const, label: t('reading.tabs.contradictions'), count: structuredContradictions.value.length },
 ])
+const pauseEachRound = computed(() =>
+  isStructured.value && (run.value?.plan.depth || 'standard') !== 'quick',
+)
 
 const activeDocument = computed(() => {
   const documents = readingDocuments.value
@@ -1331,6 +1357,7 @@ const advanceUntilPause = async () => {
       const response = await stepReadingRun(next.id)
       next = response.data
       await persistRun(next)
+      if (pauseEachRound.value && next.status === 'reading') break
     }
   } catch (err: any) {
     MessagePlugin.error(err?.message || t('reading.stepFailed'))
@@ -1973,6 +2000,14 @@ onBeforeUnmount(() => {
 .reading-round-questions,
 .reading-accumulated {
   margin-bottom: 18px;
+}
+
+.reading-round-continue {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  align-items: flex-start;
+  margin-top: 8px;
 }
 
 .reading-round-card {

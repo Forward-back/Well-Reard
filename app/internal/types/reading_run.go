@@ -219,6 +219,8 @@ type ReadingQuestionNode struct {
 	RecommendedAnswer string    `json:"recommended_answer" gorm:"type:text;not null;default:''"`
 	Why               string    `json:"why" gorm:"type:text;not null;default:''"`
 	SearchQuery       string    `json:"search_query" gorm:"type:text;not null;default:''"`
+	Kind              string    `json:"kind" gorm:"type:varchar(16);not null;default:''"`
+	GapType           string    `json:"gap_type" gorm:"type:varchar(24);not null;default:''"`
 	Evidence          JSON      `json:"evidence" gorm:"type:jsonb;not null"`
 	Answer            string    `json:"answer" gorm:"type:text;not null;default:''"`
 	AnswerSource      string    `json:"answer_source" gorm:"type:varchar(16);not null;default:''"`

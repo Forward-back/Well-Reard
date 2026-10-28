@@ -7751,6 +7751,18 @@ export default {
     searchHits: '命中 {count} 条',
     traceCounts: '结论 {conclusions} · 术语 {terms} · 矛盾 {contradictions}',
     thoughtMeta: '{searches} 次检索 · {questions} 个问题 · {duration}',
+    questionKind: {
+      fact: '事实缺口',
+      decision: '决策确认'
+    },
+    gapTypes: {
+      ambiguity: '歧义',
+      missing_param: '缺参数',
+      contradiction: '矛盾',
+      scope: '范围',
+      version: '版本'
+    },
+    roundReviewHint: '本轮已暂停；确认思考链路后点击继续阅读。',
     confirmedCount: '已确认结论 {count}',
     openCount: '未决问题 {count}',
     contradictionCount: '矛盾 {count}',

@@ -43,6 +43,8 @@ export interface ReadingQuestionNode {
   recommended_answer: string
   why?: string
   search_query?: string
+  kind?: 'fact' | 'decision' | ''
+  gap_type?: string
   evidence?: ReadingEvidence[]
   answer?: string
   answer_source?: string

@@ -24,6 +24,7 @@ const (
 	readingStructuredStateVersion = 2
 	readingQuestionCap            = 4
 	readingSearchQueryCap         = 3
+	readingForcedSearchCap        = 4
 	readingSearchEvidenceCap      = 5
 	readingSearchIterations       = 3
 	readingConclusionCap          = 8
@@ -34,6 +35,8 @@ const (
 	readingEmbeddingCacheMax      = 2000
 	readingEmbeddingTimeout       = 6 * time.Second
 )
+
+const defaultReadingGoal = "审出文档中的含糊表述、缺失参数、跨章节/跨文档矛盾、版本失效风险，并形成可确认的阅读结论"
 
 // readingEmbeddingCache avoids re-embedding unchanged conclusion text across
 // rounds. It is intentionally process-local: a wrong/stale entry only changes
@@ -168,6 +171,8 @@ type readingEvidenceRef struct {
 
 type readingLLMQuestion struct {
 	Text              string `json:"text"`
+	Kind              string `json:"kind"`
+	GapType           string `json:"gap_type"`
 	Why               string `json:"why"`
 	RecommendedAnswer string `json:"recommended_answer"`
 	SearchQuery       string `json:"search_query"`
@@ -239,6 +244,11 @@ func (o *readingRoundOutcome) pendingCount() int {
 const readingStructuredRoundRules = `## 结构化精读输出纪律
 你每轮必须完成五拍：理解本轮窗口、提出 2-4 个关键问题、能自答的先自答、报告矛盾、把结果写成结构化 JSON。
 思考过程（reasoning）请使用中文。
+你是在审问文档，不是替用户总结文档；问题必须指向文档缺口，不得提“主要内容是什么”这类泛问。
+每个问题必须给 kind 和 gap_type：
+- kind: fact（文档内可查，引擎会强制检索自答）或 decision（必须用户裁定）
+- gap_type: ambiguity / missing_param / contradiction / scope / version
+每个问题必须有 recommended_answer；没有推荐解读的问题不要提出。
 只允许引用本轮窗口或引擎检索结果中出现的 chunk_id；quote 必须是该 chunk 中逐字存在的连续片段。
 能从给定材料回答的问题必须给出 supported=true 的 answer，不要抛给用户；只有检索不落的问题才保留为待确认。
 结论必须有证据；没有证据不要写结论。矛盾必须给冲突双方出处。不要重复已确认结论和术语。
@@ -563,6 +573,109 @@ func (s *readingRunService) runReadingRound(
 			chat.Message{Role: "user", Content: builder.String() + instruction},
 		)
 	}
+	// Facts must be answered by the engine, not pushed to the user. The model
+	// may omit answers/search queries, so force one retrieval pass for every
+	// unanswered fact question, then ask the model to answer only those with
+	// the retrieved evidence. Decisions stay with the user.
+	answerByText := map[string]readingLLMAnswer{}
+	answerByIndex := map[int]readingLLMAnswer{}
+	for _, answer := range answers {
+		if strings.TrimSpace(answer.QuestionText) != "" {
+			answerByText[normalizeReadingText(answer.QuestionText)] = answer
+		}
+		answerByIndex[answer.QuestionIndex] = answer
+	}
+	type forcedFact struct {
+		index    int
+		question readingLLMQuestion
+		evidence []types.ReadingEvidence
+	}
+	forced := make([]forcedFact, 0, readingForcedSearchCap)
+	for i, question := range questionOrder {
+		if i >= readingQuestionCap || len(forced) >= readingForcedSearchCap {
+			break
+		}
+		text := strings.TrimSpace(question.Text)
+		if text == "" || readingQuestionIsGeneric(text) ||
+			strings.TrimSpace(question.RecommendedAnswer) == "" {
+			continue
+		}
+		answer, ok := answerByText[normalizeReadingText(text)]
+		if !ok {
+			answer, ok = answerByIndex[i]
+		}
+		evidence := s.resolveReadingEvidence(answer.Evidence, chunkInfo, chunkSection)
+		if ok && answer.Supported && len(evidence) > 0 && strings.TrimSpace(answer.Answer) != "" {
+			continue
+		}
+		kind := normalizeReadingQuestionKind(question.Kind)
+		query := strings.TrimSpace(question.SearchQuery)
+		if kind != "fact" && query == "" {
+			continue
+		}
+		if query == "" {
+			query = text
+		}
+		results := s.searchReadingEvidenceMerged(
+			ctx, query, semanticScope, run, plan, docs, chunkInfo, chunkSection,
+		)
+		searchEvidence[query] = results
+		questionOrder[i].SearchQuery = query
+		trace := readingSearchTrace{Query: query, HitCount: len(results)}
+		for _, item := range results {
+			trace.ChunkIDs = append(trace.ChunkIDs, item.ChunkID)
+		}
+		searchTraces = append(searchTraces, trace)
+		if len(results) == 0 {
+			continue
+		}
+		forced = append(forced, forcedFact{index: i, question: questionOrder[i], evidence: results})
+	}
+	if len(forced) > 0 {
+		var builder strings.Builder
+		builder.WriteString("以下是引擎在选中文档内检索到的证据。请只回答标记为 fact 的问题：" +
+			"证据充分时给 supported=true 的 answer + evidence（chunk_id 和逐字 quote）；" +
+			"证据不足时 supported=false。不要回答 decision 问题，不要新增事实。\n" +
+			"返回严格 JSON：{\"answers\":[{\"question_index\":0,\"question_text\":\"问题原文\"," +
+			"\"answer\":\"回答\",\"supported\":true,\"evidence\":[{\"chunk_id\":\"chunk id\"," +
+			"\"quote\":\"原文连续片段\"}]}],\"conclusions\":[],\"terms\":[],\"contradictions\":[]}。\n\n")
+		for index, item := range forced {
+			builder.WriteString(fmt.Sprintf(
+				"问题 %d：%s\n检索词：%s\n证据：\n",
+				index, item.question.Text, item.question.SearchQuery,
+			))
+			for _, evidence := range item.evidence {
+				builder.WriteString(fmt.Sprintf(
+					"- [chunk %s] %s § %s：%s\n",
+					evidence.ChunkID, evidence.DocumentTitle, evidence.Heading, evidence.Quote,
+				))
+			}
+			builder.WriteString("\n")
+		}
+		autoMessages := []chat.Message{
+			{Role: "system", Content: s.readingInstructions(ctx, run) + "\n\n" + readingStructuredRoundRules},
+			{Role: "user", Content: builder.String()},
+		}
+		parsed, _, reasoning, usage, autoErr := s.callReadingRoundModel(ctx, model, autoMessages, depth)
+		totalUsage += usage
+		if autoErr == nil {
+			if strings.TrimSpace(reasoning) != "" {
+				reasoningParts = append(reasoningParts, strings.TrimSpace(reasoning))
+			}
+			for _, answer := range parsed.Answers {
+				if answer.QuestionIndex >= 0 && answer.QuestionIndex < len(forced) {
+					answer.QuestionText = forced[answer.QuestionIndex].question.Text
+					answers = append(answers, answer)
+				} else if strings.TrimSpace(answer.QuestionText) != "" {
+					answers = append(answers, answer)
+				}
+			}
+			merged.Conclusions = append(merged.Conclusions, parsed.Conclusions...)
+			merged.Terms = append(merged.Terms, parsed.Terms...)
+			merged.Contradictions = append(merged.Contradictions, parsed.Contradictions...)
+		}
+	}
+
 	outcome := s.buildReadingRoundOutcome(
 		run, section, round, &merged, questionOrder, answers, searchEvidence,
 		state, chunkInfo, chunkSection,
@@ -659,7 +772,7 @@ func buildReadingRoundPrompt(
   "understanding": "本轮理解，2-4 句",
   "search_queries": ["需要跨章节/跨文档证据时填写，最多 2 个；否则空数组"],
   "questions": [
-    {"text": "关键问题", "why": "为什么关键", "recommended_answer": "推荐解读", "search_query": "用于自动检索的关键词"}
+    {"text": "关键问题", "kind": "fact|decision", "gap_type": "ambiguity|missing_param|contradiction|scope|version", "why": "为什么关键", "recommended_answer": "推荐解读", "search_query": "用于自动检索的关键词"}
   ],
   "answers": [
     {"question_index": 0, "question_text": "问题原文", "answer": "回答", "supported": true, "evidence": [{"chunk_id": "chunk id", "quote": "原文连续片段"}]}
@@ -958,10 +1071,18 @@ func (s *readingRunService) buildReadingRoundOutcome(
 			continue
 		}
 		seenQuestions[key] = struct{}{}
+		if readingQuestionIsGeneric(text) {
+			continue
+		}
+		if strings.TrimSpace(candidate.RecommendedAnswer) == "" {
+			continue
+		}
 		questionCount++
 		node := &types.ReadingQuestionNode{
 			ID: uuid.NewString(), RunID: run.ID, TenantID: run.TenantID,
 			SectionID: section.ID, Round: round, Text: text,
+			Kind:              normalizeReadingQuestionKind(candidate.Kind),
+			GapType:           normalizeReadingGapType(candidate.GapType),
 			RecommendedAnswer: strings.TrimSpace(candidate.RecommendedAnswer),
 			Why:               strings.TrimSpace(candidate.Why),
 			SearchQuery:       strings.TrimSpace(candidate.SearchQuery),
@@ -1408,6 +1529,43 @@ func normalizeReadingText(value string) string {
 		builder.WriteRune(unicode.ToLower(r))
 	}
 	return builder.String()
+}
+
+func normalizeReadingQuestionKind(value string) string {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "fact":
+		return "fact"
+	default:
+		return "decision"
+	}
+}
+
+func normalizeReadingGapType(value string) string {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "ambiguity", "missing_param", "contradiction", "scope", "version":
+		return strings.ToLower(strings.TrimSpace(value))
+	default:
+		return "unclassified"
+	}
+}
+
+func readingQuestionIsGeneric(text string) bool {
+	text = strings.TrimSpace(text)
+	if text == "" {
+		return true
+	}
+	if len([]rune(text)) > 80 {
+		return false
+	}
+	for _, phrase := range []string{
+		"主要内容", "核心内容", "总结一下", "概述", "讲了什么",
+		"有什么内容", "文档大意", "主要观点",
+	} {
+		if strings.Contains(text, phrase) {
+			return true
+		}
+	}
+	return false
 }
 
 func uniqueReadingStrings(values []string) []string {

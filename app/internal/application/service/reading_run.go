@@ -170,8 +170,12 @@ func (s *readingRunService) Create(
 	if err != nil {
 		return nil, err
 	}
+	goal := strings.TrimSpace(req.Goal)
+	if goal == "" {
+		goal = defaultReadingGoal
+	}
 	plan := types.ReadingPlan{
-		Goal:            strings.TrimSpace(req.Goal),
+		Goal:            goal,
 		Depth:           depth,
 		Policy:          types.ReadingPolicyGrillWithDocs,
 		KnowledgeBaseID: kbID,
