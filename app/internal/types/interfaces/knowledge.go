@@ -109,6 +109,9 @@ type KnowledgeService interface {
 	GetKnowledgeFile(ctx context.Context, id string) (io.ReadCloser, string, error)
 	// UpdateKnowledge updates knowledge information.
 	UpdateKnowledge(ctx context.Context, knowledge *types.Knowledge) error
+	// SetKnowledgeLifecycle changes a document's lifecycle status (draft /
+	// effective / expired) and propagates it to the retrieval engine.
+	SetKnowledgeLifecycle(ctx context.Context, knowledgeID string, req *types.KnowledgeLifecycleRequest) (*types.Knowledge, error)
 	// RegenerateKnowledgeSummary refreshes the document description and summary retrieval chunk.
 	RegenerateKnowledgeSummary(ctx context.Context, knowledgeID string) (*types.Knowledge, error)
 	// RequestKnowledgeSummaryRefresh enqueues an async summary refresh.

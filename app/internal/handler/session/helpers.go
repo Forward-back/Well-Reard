@@ -308,7 +308,7 @@ func (h *Handler) setupStreamHandler(
 ) *AgentStreamHandler {
 	streamHandler := NewAgentStreamHandler(
 		ctx, sessionID, assistantMessageID, requestID, tenantID, receivedAt,
-		assistantMessage, h.streamManager, eventBus, h.artifactCollector,
+		assistantMessage, h.streamManager, eventBus, h.artifactCollector, h.docVersions,
 	)
 	streamHandler.Subscribe()
 	return streamHandler

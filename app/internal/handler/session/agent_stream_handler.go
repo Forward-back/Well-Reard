@@ -38,6 +38,10 @@ type AgentStreamHandler struct {
 	// doesn't support artifact collection or Gaze was built without it.
 	artifactCollector *service.ArtifactCollector
 
+	// docVersions stamps citations with the current document version so a
+	// later edit or rollback does not silently rewrite what the answer cited.
+	docVersions interfaces.DocumentVersionService
+
 	// State tracking
 	knowledgeRefs   []*types.SearchResult
 	finalAnswer     string
@@ -90,6 +94,7 @@ func NewAgentStreamHandler(
 	streamManager interfaces.StreamManager,
 	eventBus *event.EventBus,
 	artifactCollector *service.ArtifactCollector,
+	docVersions interfaces.DocumentVersionService,
 ) *AgentStreamHandler {
 	return &AgentStreamHandler{
 		ctx:                ctx,
@@ -102,6 +107,7 @@ func NewAgentStreamHandler(
 		streamManager:      streamManager,
 		eventBus:           eventBus,
 		artifactCollector:  artifactCollector,
+		docVersions:        docVersions,
 		knowledgeRefs:      make([]*types.SearchResult, 0),
 		eventStartTimes:    make(map[string]time.Time),
 	}
@@ -400,18 +406,25 @@ func (h *AgentStreamHandler) handleReferences(ctx context.Context, evt event.Eve
 
 	// Extract knowledge references
 	// Try to cast directly to []*types.SearchResult first
+	var batch []*types.SearchResult
 	if searchResults, ok := data.References.([]*types.SearchResult); ok {
-		upsertKnowledgeRefs(h, searchResults)
+		batch = searchResults
 	} else if refs, ok := data.References.([]interface{}); ok {
 		// Fallback: convert from []interface{}
 		for _, ref := range refs {
 			if sr, ok := ref.(*types.SearchResult); ok {
-				upsertKnowledgeRefs(h, []*types.SearchResult{sr})
+				batch = append(batch, sr)
 			} else if refMap, ok := ref.(map[string]interface{}); ok {
 				// Parse from map if needed
-				upsertKnowledgeRefs(h, []*types.SearchResult{searchResultFromMap(refMap)})
+				batch = append(batch, searchResultFromMap(refMap))
 			}
 		}
+	}
+	// Bind the current document version before the refs are persisted, so a
+	// later edit/rollback does not silently rewrite what this answer cited.
+	service.AttachReferenceVersions(ctx, h.docVersions, h.tenantID, batch)
+	if len(batch) > 0 {
+		upsertKnowledgeRefs(h, batch)
 	}
 
 	// Update assistant message references

@@ -44,6 +44,9 @@ export type CitationKnowledgeRef = {
   /** 答案文本内对齐位置（YLSW 后处理回填），供内联 [n] 上标注入 */
   start_at?: number
   end_at?: number
+  /** 回答生成时绑定的文档版本（落库随引用保存） */
+  version_id?: string
+  version_label?: string
   metadata?: Record<string, string>
 }
 

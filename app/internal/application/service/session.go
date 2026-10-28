@@ -128,6 +128,7 @@ type sessionService struct {
 	tenantSkillRepo   repository.TenantSkillRepository
 	ragEngine         engine.RAGEngine // Retrieval/generation engine (YLSW)
 	aclService        interfaces.KBAclService
+	docVersions       interfaces.DocumentVersionService // Citation version binding
 }
 
 // NewSessionService creates a new session service instance with all required dependencies
@@ -153,6 +154,7 @@ func NewSessionService(cfg *config.Config,
 	tenantSkillRepo repository.TenantSkillRepository,
 	ragEngine engine.RAGEngine,
 	aclService interfaces.KBAclService,
+	docVersions interfaces.DocumentVersionService,
 ) interfaces.SessionService {
 	return &sessionService{
 		cfg:                   cfg,
@@ -177,6 +179,7 @@ func NewSessionService(cfg *config.Config,
 		tenantSkillRepo:       tenantSkillRepo,
 		ragEngine:             ragEngine,
 		aclService:            aclService,
+		docVersions:           docVersions,
 	}
 }
 

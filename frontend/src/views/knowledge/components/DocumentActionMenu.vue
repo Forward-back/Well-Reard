@@ -8,6 +8,7 @@ interface KnowledgeItem {
   title?: string;
   type?: string;
   parse_status?: string;
+  lifecycle_status?: string;
 }
 
 const props = defineProps<{
@@ -28,6 +29,7 @@ const emit = defineEmits<{
   (e: 'move'): void;
   (e: 'move-folder'): void;
   (e: 'batch-manage'): void;
+  (e: 'lifecycle'): void;
   (e: 'delete'): void;
 }>();
 
@@ -111,6 +113,12 @@ const fileName = computed(() => props.item.file_name || props.item.title || prop
   <div v-if="canMutateKnowledge" class="doc-action-menu-item" @click.stop="emit('batch-manage')">
     <t-icon class="icon" name="queue" />
     <span>{{ $t('menu.batchManage') }}</span>
+  </div>
+
+  <!-- 标记废止 / 恢复生效 -->
+  <div v-if="canMutateKnowledge" class="doc-action-menu-item" @click.stop="emit('lifecycle')">
+    <t-icon class="icon" name="time" />
+    <span>{{ item.lifecycle_status === 'expired' ? $t('knowledgeBase.restoreEffective') : $t('knowledgeBase.markExpired') }}</span>
   </div>
 
   <!-- 删除文档 -->

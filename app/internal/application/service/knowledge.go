@@ -85,6 +85,8 @@ type knowledgeService struct {
 	spanTracker SpanTracker
 	audit       interfaces.AuditLogService
 	ragEngine   engine.RAGEngine
+	engineSync  *EngineSyncService
+	docVersions interfaces.DocumentVersionService
 }
 
 const (
@@ -124,6 +126,8 @@ func NewKnowledgeService(
 	spanTracker SpanTracker,
 	audit interfaces.AuditLogService,
 	ragEngine engine.RAGEngine,
+	engineSync *EngineSyncService,
+	docVersions interfaces.DocumentVersionService,
 ) (interfaces.KnowledgeService, error) {
 	return &knowledgeService{
 		config:          config,
@@ -155,6 +159,8 @@ func NewKnowledgeService(
 		spanTracker:     spanTracker,
 		audit:           audit,
 		ragEngine:       ragEngine,
+		engineSync:      engineSync,
+		docVersions:     docVersions,
 	}, nil
 }
 

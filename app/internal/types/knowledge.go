@@ -543,6 +543,16 @@ type KnowledgeCustomFieldDef struct {
 	UpdatedAt   string `json:"updated_at"`
 }
 
+// KnowledgeLifecycleRequest changes one document's lifecycle status. Status is
+// effective|expired|draft; optional fields are only written when provided.
+type KnowledgeLifecycleRequest struct {
+	Status        string `json:"status"`
+	EffectiveDate string `json:"effective_date"`
+	ExpiryDate    string `json:"expiry_date"`
+	SupersededBy  string `json:"superseded_by"`
+	Reason        string `json:"reason"`
+}
+
 // TableName specifies the database table name
 func (KnowledgeCustomFieldDef) TableName() string {
 	return "knowledge_custom_field_defs"

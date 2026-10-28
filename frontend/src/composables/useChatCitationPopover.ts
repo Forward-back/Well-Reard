@@ -24,6 +24,7 @@ type FloatState = {
     doc_number?: string
     org_name?: string
     lifecycle_status?: string
+    version_label?: string
   }
   /** 该 [n] 上标对应的答案命中句（悬浮卡内高亮） */
   citeText?: string
@@ -101,11 +102,13 @@ export function useChatCitationPopover(
     const ref = exactRef || refs.find((r) => r?.id === chunkId)
     float.value.title = title || ref?.knowledge_title || ref?.knowledge_filename || ''
     const md = ref?.metadata
-    float.value.meta = md && (md.doc_number || md.org_name || md.lifecycle_status)
+    const versionLabel = ref?.version_label
+    float.value.meta = (md && (md.doc_number || md.org_name || md.lifecycle_status)) || versionLabel
       ? {
-          doc_number: md.doc_number,
-          org_name: md.org_name,
-          lifecycle_status: md.lifecycle_status,
+          doc_number: md?.doc_number,
+          org_name: md?.org_name,
+          lifecycle_status: md?.lifecycle_status,
+          version_label: versionLabel,
         }
       : undefined
     float.value.citeText = el.getAttribute('data-cite-text') || ''

@@ -208,6 +208,12 @@ type SearchResult struct {
 	// KnowledgeBaseID is the ID of the knowledge base this result belongs to
 	KnowledgeBaseID string `json:"knowledge_base_id,omitempty"`
 
+	// VersionID/VersionLabel bind the citation to the document version that
+	// was current when the answer was produced, so history can show which
+	// revision an answer relied on. Empty when the document has no version.
+	VersionID    string `json:"version_id,omitempty"`
+	VersionLabel string `json:"version_label,omitempty"`
+
 	// ContentRevision is the chunk edit revision at retrieval time.
 	// Internal only: used by the merge pipeline to decide whether source
 	// coordinates are still trustworthy.

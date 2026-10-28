@@ -315,6 +315,8 @@ func (e *ylswEngine) search(
 	}
 	if len(documentIDs) > 0 {
 		payloadMap["document_ids"] = documentIDs
+		// 精读是用户显式选定文档的整篇阅读，废止文档也要能读。
+		payloadMap["include_expired"] = true
 	}
 	payload, err := json.Marshal(payloadMap)
 	if err != nil {

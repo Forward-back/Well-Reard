@@ -51,6 +51,8 @@ type Handler struct {
 	// ragEngine backs the /knowledge-search pure-retrieval endpoint (§2.15).
 	ragEngine  engine.RAGEngine
 	aclService interfaces.KBAclService
+	// docVersions binds citations to the document version current at answer time.
+	docVersions interfaces.DocumentVersionService
 }
 
 // NewHandler creates a new instance of Handler with all necessary dependencies
@@ -79,6 +81,7 @@ func NewHandler(
 	terminalService *service.SandboxTerminalService,
 	ragEngine engine.RAGEngine,
 	aclService interfaces.KBAclService,
+	docVersions interfaces.DocumentVersionService,
 ) *Handler {
 	return &Handler{
 		sessionService:       sessionService,
@@ -103,6 +106,7 @@ func NewHandler(
 		terminalService:      terminalService,
 		ragEngine:            ragEngine,
 		aclService:           aclService,
+		docVersions:          docVersions,
 		attachmentProcessor: NewAttachmentProcessor(
 			fileService,
 			documentReader,

@@ -43,6 +43,7 @@ import {
   moveKnowledgeToFolder,
   downKnowledgeDetails,
   listKnowledgeFiles,
+  updateKnowledgeLifecycle,
   type KnowledgeFolderTree,
 } from "@/api/knowledge-base/index";
 import { waitForKnowledgeDeletion } from '@/utils/knowledgeDeletion';
@@ -1595,6 +1596,7 @@ type KnowledgeCard = {
   metadata?: any;
   error_message?: string;
   tags?: Array<{ id: string; name: string; color?: string }>;
+  lifecycle_status?: string;
 };
 // needsStatusPolling decides whether a card row is still "in flight"
 // enough that the doc list should keep refreshing it. Keep in sync with
@@ -2569,7 +2571,7 @@ const downloadKnowledge = async (item: KnowledgeCard) => {
 
 // Bridge card-view actions back to existing per-card handlers.
 const handleCardAction = (
-  action: 'download' | 'edit' | 'reparse' | 'cancel-parse' | 'move' | 'move-folder' | 'delete' | 'view-trace' | 'batch-manage',
+  action: 'download' | 'edit' | 'reparse' | 'cancel-parse' | 'move' | 'move-folder' | 'delete' | 'view-trace' | 'batch-manage' | 'lifecycle',
   item: KnowledgeCard,
 ) => {
   const idx = (cardList.value || []).findIndex((i: KnowledgeCard) => i.id === item.id);
@@ -2584,11 +2586,12 @@ const handleCardAction = (
   if (action === 'delete') return confirmDeleteKnowledge(idx, item);
   if (action === 'view-trace') return handleViewTrace(idx, item);
   if (action === 'batch-manage') return handleEnterBatchFromCard(item);
+  if (action === 'lifecycle') return confirmLifecycleChange(item);
 };
 
 // Bridge list-view actions back to existing per-card handlers.
 const handleListAction = (
-  action: 'download' | 'edit' | 'reparse' | 'cancel-parse' | 'move' | 'move-folder' | 'delete' | 'view-trace' | 'batch-manage',
+  action: 'download' | 'edit' | 'reparse' | 'cancel-parse' | 'move' | 'move-folder' | 'delete' | 'view-trace' | 'batch-manage' | 'lifecycle',
   item: KnowledgeCard,
 ) => {
   const idx = (cardList.value || []).findIndex((i: KnowledgeCard) => i.id === item.id);
@@ -2600,6 +2603,39 @@ const handleListAction = (
   if (action === 'delete') return confirmDeleteKnowledge(idx, item);
   if (action === 'view-trace') return handleViewTrace(idx, item);
   if (action === 'batch-manage') return handleEnterBatchFromCard(item);
+  if (action === 'lifecycle') return confirmLifecycleChange(item);
+};
+
+// 废止/恢复生效：状态变化立即重推检索侧，这里只做一次确认。
+const confirmLifecycleChange = (item: KnowledgeCard) => {
+  const restoring = item.lifecycle_status === 'expired';
+  const fileName = item.file_name || item.title || item.id;
+  const dialog = DialogPlugin.confirm({
+    header: t(restoring ? 'knowledgeBase.restoreEffective' : 'knowledgeBase.markExpired'),
+    body: t(
+      restoring ? 'knowledgeBase.restoreEffectiveConfirm' : 'knowledgeBase.markExpiredConfirm',
+      { fileName },
+    ),
+    confirmBtn: {
+      content: t('common.confirm'),
+      theme: restoring ? 'primary' : 'danger',
+    },
+    cancelBtn: t('common.cancel'),
+    onConfirm: async () => {
+      dialog.hide();
+      try {
+        await updateKnowledgeLifecycle(item.id, {
+          status: restoring ? 'effective' : 'expired',
+        });
+        MessagePlugin.success(t(
+          restoring ? 'knowledgeBase.restoreEffectiveDone' : 'knowledgeBase.markExpiredDone',
+        ));
+        await loadKnowledgeList();
+      } catch (error: any) {
+        MessagePlugin.error(error?.message || t('knowledgeBase.lifecycleFailed'));
+      }
+    },
+  });
 };
 
 // Clear selection on filter/tag/kb change to avoid acting on hidden items.

@@ -117,6 +117,32 @@ func (s *EngineSyncService) TriggerKBSync(
 	return len(targets), nil
 }
 
+// ScheduleKnowledgeSync re-ingests one document in the background after a
+// content change (CR merge, version rollback, chunk edit). Publishing should
+// not wait for an admin to press "重推"; the pending marker stays on failure so
+// the daily sweep or the manual button can retry. Safe on a nil receiver so
+// tests that build services without a sync service keep working.
+func (s *EngineSyncService) ScheduleKnowledgeSync(ctx context.Context, tenantID uint64, knowledgeID string) {
+	if s == nil || knowledgeID == "" {
+		return
+	}
+	knowledge, err := s.knowledgeRepo.GetKnowledgeByIDOnly(ctx, knowledgeID)
+	if err != nil || knowledge == nil || knowledge.TenantID != tenantID {
+		logger.Warnf(ctx, "[EngineSync] schedule skipped for knowledge %s: %v", knowledgeID, err)
+		return
+	}
+	if err := s.knowledgeRepo.MarkEngineSyncPending(ctx, tenantID, knowledgeID); err != nil {
+		logger.Warnf(ctx, "[EngineSync] mark pending failed for knowledge %s: %v", knowledgeID, err)
+		return
+	}
+	baseCtx := context.WithoutCancel(ctx)
+	go func() {
+		if err := s.syncOne(baseCtx, knowledge); err != nil {
+			logger.Warnf(baseCtx, "[EngineSync] auto resync knowledge %s failed: %v", knowledgeID, err)
+		}
+	}()
+}
+
 // Start registers the daily sweep. The cron always runs; each tenant decides
 // via EngineSyncConfig.Enabled. Kill switch: GAZE_ENGINE_SYNC_CRON_ENABLED=0.
 func (s *EngineSyncService) Start(ctx context.Context) error {

@@ -44,6 +44,7 @@ const (
 	DocVersionSourceManualEdit = "manual_edit"
 	DocVersionSourceCRMerge    = "cr_merge"
 	DocVersionSourceRollback   = "rollback"
+	DocVersionSourceReparse    = "reparse"
 
 	DocIssueTypeDataError = "data_error"
 	DocIssueTypeOutdated  = "outdated"

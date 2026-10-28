@@ -198,6 +198,9 @@ func (s *sessionService) KnowledgeQAFusion(
 		r.Metadata["kb_name"] = name
 	}
 
+	// 引用绑定当前版本：回答落库后仍能说明“当时依据的是哪一版”。
+	AttachReferenceVersions(ctx, s.docVersions, qaReq.Session.TenantID, refs)
+
 	// 用携带内联位置（start_at/end_at）的最终引用覆盖一次，必须在
 	// Done 事件之前发：qa.go 在 Done=true 时落库 assistantMessage，
 	// 落库前 upsert 到位的引用才能带位置持久化。前端按 replace 语义

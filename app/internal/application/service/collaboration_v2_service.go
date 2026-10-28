@@ -406,5 +406,7 @@ func (s *collaborationService) RollbackDocVersion(
 		}
 		return nil, err
 	}
+	// 回滚同样立即生效：把恢复后的内容重新推进检索侧。
+	s.engineSync.ScheduleKnowledgeSync(ctx, kb.TenantID, knowledgeID)
 	return version, nil
 }

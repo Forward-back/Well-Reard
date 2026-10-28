@@ -123,6 +123,23 @@ func (s *documentVersionService) ListVersions(
 	return versions, nil
 }
 
+// LatestVersion returns the current version head without creating a baseline.
+// Citation binding runs on the answer path, where a snapshot write would be
+// both surprising and expensive; documents that never had a version stay
+// unlabelled until someone opens their version history.
+func (s *documentVersionService) LatestVersion(
+	ctx context.Context, tenantID uint64, knowledgeID string,
+) (*types.DocVersion, error) {
+	version, err := s.repo.GetLatestDocVersion(ctx, tenantID, knowledgeID)
+	if err != nil {
+		if errors.Is(err, repository.ErrDocVersionNotFound) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	return version, nil
+}
+
 func (s *documentVersionService) GetVersion(
 	ctx context.Context, tenantID uint64, kbID, knowledgeID, versionID string,
 ) (*types.DocVersion, []*types.DocVersionChunk, error) {

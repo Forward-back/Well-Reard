@@ -496,6 +496,21 @@ export function updateKnowledgeSummary(knowledgeId: string, description: string)
   return put(`/api/v1/knowledge/${knowledgeId}`, { description });
 }
 
+export type KnowledgeLifecycleStatus = 'draft' | 'effective' | 'expired';
+
+export function updateKnowledgeLifecycle(
+  knowledgeId: string,
+  data: {
+    status: KnowledgeLifecycleStatus;
+    effective_date?: string;
+    expiry_date?: string;
+    superseded_by?: string;
+    reason?: string;
+  },
+) {
+  return put(`/api/v1/knowledge/${knowledgeId}/lifecycle`, data);
+}
+
 export function regenerateKnowledgeSummary(knowledgeId: string) {
   return post(`/api/v1/knowledge/${knowledgeId}/regenerate-summary`, {});
 }

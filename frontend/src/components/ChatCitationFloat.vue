@@ -12,6 +12,7 @@
         <div v-if="float.meta" class="chat-citation-float__meta">
           <span v-if="float.meta.org_name" class="citation-meta-badge">{{ float.meta.org_name }}</span>
           <span v-if="float.meta.doc_number" class="citation-meta-badge">{{ float.meta.doc_number }}</span>
+          <span v-if="float.meta.version_label" class="citation-meta-badge">{{ $t('chat.referenceVersion', { version: float.meta.version_label }) }}</span>
           <span v-if="float.meta.lifecycle_status === 'expired'" class="citation-meta-badge citation-meta-badge--danger">{{ $t('chat.referenceExpired') }}</span>
         </div>
         <div v-if="float.loading" class="chat-citation-float__muted">{{ loadingText }}</div>

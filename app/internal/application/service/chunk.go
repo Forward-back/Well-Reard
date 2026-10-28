@@ -35,6 +35,7 @@ type chunkService struct {
 	task            interfaces.TaskEnqueuer
 	spanTracker     SpanTracker
 	docVersions     interfaces.DocumentVersionService
+	engineSync      *EngineSyncService
 }
 
 // NewChunkService creates a new chunk service
@@ -54,6 +55,7 @@ func NewChunkService(
 	task interfaces.TaskEnqueuer,
 	spanTracker SpanTracker,
 	docVersions interfaces.DocumentVersionService,
+	engineSync *EngineSyncService,
 ) interfaces.ChunkService {
 	return &chunkService{
 		chunkRepository: chunkRepository,
@@ -65,6 +67,7 @@ func NewChunkService(
 		task:            task,
 		spanTracker:     spanTracker,
 		docVersions:     docVersions,
+		engineSync:      engineSync,
 	}
 }
 
@@ -543,6 +546,9 @@ func (s *chunkService) UpdateDocumentChunk(
 	if err := s.chunkRepository.UpdateChunk(ctx, chunk); err != nil {
 		return nil, err
 	}
+	// 直接编辑同样立即同步检索侧，避免编辑后问答仍命中旧内容。放在父块
+	// 重建与图片子块同步之后，保证推给 YLSW 的是最终内容。
+	s.engineSync.ScheduleKnowledgeSync(ctx, chunk.TenantID, chunk.KnowledgeID)
 	return chunk, nil
 }
 

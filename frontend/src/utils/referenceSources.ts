@@ -17,6 +17,8 @@ export type KnowledgeReferenceLike = {
   chunk_index?: number
   chunk_type?: string
   content?: string
+  version_id?: string
+  version_label?: string
   metadata?: Record<string, string>
 }
 
@@ -189,7 +191,7 @@ function buildDocumentMetaChips(item: KnowledgeReferenceLike): ReferenceMetaChip
   const chips: ReferenceMetaChip[] = []
   const md = item.metadata || {}
   const filename = item.knowledge_filename || item.knowledge_title || ''
-  const version = extractVersion(filename)
+  const version = item.version_label || extractVersion(filename)
   if (version) chips.push({ text: version })
   if (md.org_name) chips.push({ text: md.org_name })
   if (md.kb_name) chips.push({ text: md.kb_name })

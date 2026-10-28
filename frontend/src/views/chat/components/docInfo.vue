@@ -208,6 +208,7 @@ const chunkMetaBadges = (chunk) => {
     const badges = [];
     if (md.org_name) badges.push({ text: md.org_name });
     if (md.doc_number) badges.push({ text: md.doc_number });
+    if (chunk.version_label) badges.push({ text: t('chat.referenceVersion', { version: chunk.version_label }) });
     if (md.lifecycle_status === 'expired') badges.push({ text: t('chat.referenceExpired'), danger: true });
     return badges;
 };

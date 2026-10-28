@@ -167,7 +167,8 @@ def _run_query(question: str, collect_timing: bool = False, collect_trace: bool 
                department: str | None = None,
                acl_scope: dict | None = None,
                skill: dict | None = None,
-               skill_skipped: bool = False):
+               skill_skipped: bool = False,
+               include_expired: bool = False):
     """主查询管线：实体检测 → 规划器（tag + 计划）→ 并行检索 → RRF → 精排 → Parent → LLM，返回答案文本。
 
     collect_timing=True 时返回 (answer, timings, trace, refs)，timings 为各阶段耗时字典（毫秒）。
@@ -442,10 +443,12 @@ def _run_query(question: str, collect_timing: bool = False, collect_trace: bool 
             ),
         )
         # 生命周期检索语义(§2.14 A)：废止文档降权 + 时间感知，重排后调整
-        reranked = _apply_lifecycle(question, reranked)
+        reranked = _apply_lifecycle(question, reranked, include_expired)
         # 邻域补全：入选 chunk 的同文档相邻块（±N）若被精排裁剪，按融合序补入尾部。
         # 法规条款/补贴标准类细节题的正确 chunk 常与已选 chunk 相邻但 rerank 分数低。
         reranked = _append_neighbors(reranked, merged)
+        if not include_expired:
+            reranked = _drop_expired(reranked)
         # Final pre-context / pre-reference recheck: neighbor expansion must not
         # reintroduce a document the caller cannot read.
         reranked = _filter_by_acl(reranked, acl_scope)
@@ -571,6 +574,7 @@ def handle_chat():
     acl_scope = None
     skill = None
     skill_skipped = False
+    include_expired = False
     if request.is_json:
         body = request.get_json(silent=True) or {}
         question = body.get("question")
@@ -586,6 +590,7 @@ def handle_chat():
             return jsonify({"error": acl_error}), 400
         skill = _parse_skill(body)
         skill_skipped = bool(body.get("skill")) and skill is None
+        include_expired = bool(body.get("include_expired"))
     else:
         question = request.form.get("question") or request.args.get("question")
     question = (question or "").strip()
@@ -598,7 +603,7 @@ def handle_chat():
             question, collect_timing=timing_requested, collect_trace=trace_requested,
             kb_ids=kb_ids, allowed_sensitivities=allowed_sensitivities,
             department=department, acl_scope=acl_scope, skill=skill,
-            skill_skipped=skill_skipped,
+            skill_skipped=skill_skipped, include_expired=include_expired,
         )
         resp = {"answer": answer}
         if timing_requested:
@@ -609,7 +614,7 @@ def handle_chat():
     return jsonify({"answer": _run_query(
         question, kb_ids=kb_ids, allowed_sensitivities=allowed_sensitivities,
         department=department, acl_scope=acl_scope, skill=skill,
-        skill_skipped=skill_skipped,
+        skill_skipped=skill_skipped, include_expired=include_expired,
     )})
 
 
@@ -778,6 +783,7 @@ def handle_chat_stream():
         return jsonify({"error": acl_error}), 400
     skill = _parse_skill(body)
     skill_skipped = bool(body.get("skill")) and skill is None
+    include_expired = bool(body.get("include_expired"))
     if not question:
         return jsonify({"answer": "请输入您的问题。"})
 
@@ -808,7 +814,7 @@ def handle_chat_stream():
                     on_stage=_stage,
                     kb_ids=kb_ids, allowed_sensitivities=allowed_sensitivities,
                     department=department, acl_scope=acl_scope, skill=skill,
-                    skill_skipped=skill_skipped,
+                    skill_skipped=skill_skipped, include_expired=include_expired,
                 )))
             except Exception as e:
                 logger.error(f"[fusion] 流式查询异常: {e}", exc_info=True)
@@ -1267,7 +1273,8 @@ def _run_retrieval(question: str, top_k: int = None,
                    allowed_sensitivities: list | None = None,
                    department: str | None = None,
                    acl_scope: dict | None = None,
-                   document_ids: list | None = None) -> list[dict]:
+                   document_ids: list | None = None,
+                   include_expired: bool = False) -> list[dict]:
     """纯检索子管线（无规划器/LLM 生成）：实体检测 → 类1并行检索 → RRF → 精排 → 邻域补全。
 
     Agent 检索场景（/search）专用：查询已是 Agent 改写后的检索文本，
@@ -1315,8 +1322,10 @@ def _run_retrieval(question: str, top_k: int = None,
     reranked = fusion.rerank(
         question, merged, top_k=(top_k or FINAL_TOP_K) + 4, query_type=query_type,
     )
-    reranked = _apply_lifecycle(question, reranked)
+    reranked = _apply_lifecycle(question, reranked, include_expired)
     reranked = _append_neighbors(reranked, merged)
+    if not include_expired:
+        reranked = _drop_expired(reranked)
     return _filter_by_acl(reranked, acl_scope)
 
 
@@ -1348,6 +1357,7 @@ def handle_search():
         document_ids = []
     document_ids = [str(item).strip() for item in document_ids if str(item).strip()]
     allowed_sensitivities, department = _parse_access_filters(body)
+    include_expired = bool(body.get("include_expired"))
     acl_scope, acl_error = _parse_acl_scope(body)
     if acl_error:
         logger.warning(f"[search] rejected request: {acl_error}")
@@ -1374,7 +1384,8 @@ def handle_search():
             reranked = _run_retrieval(q, top_k=top_k, kb_ids=kb_ids,
                                       allowed_sensitivities=allowed_sensitivities,
                                       department=department, acl_scope=acl_scope,
-                                      document_ids=document_ids)
+                                      document_ids=document_ids,
+                                      include_expired=include_expired)
         except Exception as e:
             logger.error(f"[search] 查询 {q[:60]} 检索异常: {e}", exc_info=True)
             continue
@@ -1615,32 +1626,42 @@ def _filter_by_acl(candidates: list[dict], acl_scope) -> list[dict]:
 _YEAR_RE = re.compile(r"(19|20)\d{2}")
 
 
-def _apply_lifecycle(question: str, candidates: list[dict]) -> list[dict]:
-    """生命周期检索语义（§2.14 A）：废止降权（非硬滤）+ 时间感知。
+def _drop_expired(candidates: list[dict]) -> list[dict]:
+    """Default retrieval contract: retired documents are not cited at all."""
+    return [c for c in candidates if (c.get("lifecycle_status") or "effective") != "expired"]
 
-    - status=expired：rerank_score × 0.7，加「已废止」标签（引用/上下文透出）
+
+def _apply_lifecycle(question: str, candidates: list[dict],
+                     include_expired: bool = False) -> list[dict]:
+    """生命周期检索语义（§2.14 A）：默认剔除废止文档 + 时间感知。
+
+    - status=expired：默认直接剔除；调用方显式 include_expired=true 时保留并
+      rerank_score × 0.7，加「已废止」标签（历史口径查询用）
     - 问题含年份：该时点有效（生效 ≤ 年 ≤ 废止）→ × 1.1；时点外 → × 0.8
     无 rerank_score 的候选（SQL/邻域补位）跳过数值调整，仅打标签。
     """
     m = _YEAR_RE.search(question or "")
     year = int(m.group(0)) if m else None
+    kept = []
     for c in candidates:
         status = c.get("lifecycle_status") or "effective"
         if status == "expired":
+            if not include_expired:
+                continue
             c["lifecycle_label"] = "已废止"
         score = c.get("rerank_score")
-        if score is None:
-            continue
-        if status == "expired":
-            c["rerank_score"] = score * 0.7
-        elif year is not None:
-            eff = c.get("effective_date") or ""
-            exp = c.get("expiry_date") or ""
-            eff_y = int(eff[:4]) if len(eff) >= 4 and eff[:4].isdigit() else None
-            exp_y = int(exp[:4]) if len(exp) >= 4 and exp[:4].isdigit() else None
-            in_win = (eff_y is None or eff_y <= year) and (exp_y is None or exp_y >= year)
-            c["rerank_score"] = score * (1.1 if in_win else 0.8)
-    return candidates
+        if score is not None:
+            if status == "expired":
+                c["rerank_score"] = score * 0.7
+            elif year is not None:
+                eff = c.get("effective_date") or ""
+                exp = c.get("expiry_date") or ""
+                eff_y = int(eff[:4]) if len(eff) >= 4 and eff[:4].isdigit() else None
+                exp_y = int(exp[:4]) if len(exp) >= 4 and exp[:4].isdigit() else None
+                in_win = (eff_y is None or eff_y <= year) and (exp_y is None or exp_y >= year)
+                c["rerank_score"] = score * (1.1 if in_win else 0.8)
+        kept.append(c)
+    return kept
 
 
 # ── /ingest /delete_document：app 推送数据流（内存状态同步 + FAISS 增量）──

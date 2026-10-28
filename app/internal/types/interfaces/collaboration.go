@@ -110,6 +110,7 @@ type DocumentVersionService interface {
 	EnsureInitialVersion(ctx context.Context, tenantID uint64, kbID, knowledgeID, actorID string) (*types.DocVersion, error)
 	CreateVersion(ctx context.Context, tenantID uint64, kbID, knowledgeID, sourceType, sourceID, title, description, actorID string) (*types.DocVersion, error)
 	ListVersions(ctx context.Context, tenantID uint64, kbID, knowledgeID string) ([]*types.DocVersion, error)
+	LatestVersion(ctx context.Context, tenantID uint64, knowledgeID string) (*types.DocVersion, error)
 	GetVersion(ctx context.Context, tenantID uint64, kbID, knowledgeID, versionID string) (*types.DocVersion, []*types.DocVersionChunk, error)
 	CompareVersions(ctx context.Context, tenantID uint64, kbID, knowledgeID, fromVersionID, toVersionID string) (*types.DocVersionCompareResponse, error)
 	Rollback(ctx context.Context, tenantID uint64, kbID, knowledgeID, versionID, actorID, comment string) (*types.DocVersion, error)

@@ -2214,6 +2214,58 @@ func (h *KnowledgeHandler) UpdateKnowledge(c *gin.Context) {
 	})
 }
 
+type UpdateKnowledgeLifecycleRequest struct {
+	Status        string `json:"status"`
+	EffectiveDate string `json:"effective_date"`
+	ExpiryDate    string `json:"expiry_date"`
+	SupersededBy  string `json:"superseded_by"`
+	Reason        string `json:"reason"`
+}
+
+// SetKnowledgeLifecycle marks a document draft/effective/expired. The service
+// restricts it to department managers and re-pushes the document to the
+// retrieval engine so retired material stops being cited.
+func (h *KnowledgeHandler) SetKnowledgeLifecycle(c *gin.Context) {
+	ctx := c.Request.Context()
+	id := secutils.SanitizeForLog(c.Param("id"))
+	if id == "" {
+		c.Error(errors.NewBadRequestError("Knowledge ID cannot be empty"))
+		return
+	}
+	_, effCtx, err := h.resolveKnowledgeAndValidateKBAccess(c, id, types.OrgRoleViewer)
+	if err != nil {
+		c.Error(err)
+		return
+	}
+	var req UpdateKnowledgeLifecycleRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.Error(errors.NewBadRequestError(err.Error()))
+		return
+	}
+	updated, err := h.kgService.SetKnowledgeLifecycle(effCtx, id, &types.KnowledgeLifecycleRequest{
+		Status:        req.Status,
+		EffectiveDate: req.EffectiveDate,
+		ExpiryDate:    req.ExpiryDate,
+		SupersededBy:  req.SupersededBy,
+		Reason:        req.Reason,
+	})
+	if err != nil {
+		logger.ErrorWithFields(ctx, err, nil)
+		var appErr *errors.AppError
+		if goerrors.As(err, &appErr) {
+			_ = c.Error(appErr)
+		} else {
+			_ = c.Error(errors.NewInternalServerError(err.Error()))
+		}
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{
+		"success": true,
+		"message": "Knowledge lifecycle updated",
+		"data":    updated,
+	})
+}
+
 // RegenerateKnowledgeSummary refreshes a stale summary after chunk or metadata edits.
 func (h *KnowledgeHandler) RegenerateKnowledgeSummary(c *gin.Context) {
 	ctx := c.Request.Context()

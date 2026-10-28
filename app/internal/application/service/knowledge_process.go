@@ -2484,6 +2484,18 @@ func (s *knowledgeService) ReparseKnowledge(
 
 	tenantID := existing.TenantID
 
+	// 重新解析会删除旧 chunk 并生成新 chunk ID；先留一份版本快照，事后可回滚。
+	if s.docVersions != nil &&
+		(existing.ParseStatus == types.ParseStatusCompleted || existing.ParseStatus == types.ParseStatusFinalizing) {
+		actorID, _ := types.UserIDFromContext(ctx)
+		if _, snapErr := s.docVersions.CreateVersion(ctx,
+			existing.TenantID, existing.KnowledgeBaseID, existing.ID,
+			types.DocVersionSourceReparse, "", "重新解析前快照", "", actorID,
+		); snapErr != nil {
+			logger.Warnf(ctx, "[Reparse] snapshot before reparse failed for %s: %v", existing.ID, snapErr)
+		}
+	}
+
 	// Allocate a fresh span tree attempt up front. Doing this BEFORE
 	// the cleanup + enqueue means: (a) the UI immediately sees a new
 	// attempt with all five stages back to "pending" instead of the
