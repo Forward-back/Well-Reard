@@ -278,6 +278,9 @@ type KnowledgeRepository interface {
 	ListKnowledgeByEngineSyncStatus(
 		ctx context.Context, kbID string, statuses []string,
 	) ([]*types.Knowledge, error)
+	// ListLifecycleScheduled lists documents whose lifecycle may change by date:
+	// status draft/effective with a non-empty effective or expiry date.
+	ListLifecycleScheduled(ctx context.Context) ([]*types.Knowledge, error)
 	// CheckKnowledgeExists checks if knowledge already exists.
 	// For file types, check by fileHash or (fileName+fileSize).
 	// For URL types, check by URL.

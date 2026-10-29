@@ -136,6 +136,17 @@ class ChunkStore:
         """document_id → 企业级元数据（生命周期/密级/部门）；未知返回空 dict。"""
         return self._doc_meta.get(document_id) or {}
 
+    def patch_doc_meta(self, document_id, **fields) -> bool:
+        """原地更新单文档元数据（不重载全表）。文档不在镜像中返回 False。"""
+        meta = self._doc_meta.get(document_id)
+        if meta is None:
+            return False
+        for key in ("lifecycle_status", "effective_date", "expiry_date",
+                    "sensitivity", "department", "source_doc_id", "knowledge_base_id"):
+            if key in fields and fields[key] is not None:
+                meta[key] = fields[key]
+        return True
+
     def resolve(self, faiss_hits: list) -> list[dict]:
         """FAISS (vector_id, score) → 含文本+元数据的结果（与原 _resolve_faiss_results 同构）。"""
         results = []

@@ -1275,3 +1275,32 @@ export function steerConfigSkill(configId: string, skillId: string, payload: {
 }) {
   return post(`/api/v1/sandbox-configs/${configId}/skills/${skillId}/guidance`, payload)
 }
+
+export interface RetrievalIndexStatus {
+  status: string
+  vectors: number
+  documents: number
+  child_chunks: number
+  pending_chunks: number
+  failed_chunks: number
+  index_path: string
+  file_size: number
+  file_updated_at: string
+  previous_index: boolean
+  error?: string
+}
+
+export interface RetrievalIndexHealth {
+  data?: RetrievalIndexStatus
+  warnings?: string[]
+}
+
+export async function getRetrievalIndexStatus(): Promise<RetrievalIndexHealth> {
+  const response = await get('/api/v1/system/admin/index-status')
+  return response as unknown as RetrievalIndexHealth
+}
+
+export async function runLifecycleSweep(): Promise<{ success: boolean; changed: number }> {
+  const response = await post('/api/v1/system/admin/lifecycle-sweep', {})
+  return response as unknown as { success: boolean; changed: number }
+}

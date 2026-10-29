@@ -77,8 +77,18 @@ func (e *auditedEngine) DeleteDocument(ctx context.Context, documentID string) e
 	return e.inner.DeleteDocument(ctx, documentID)
 }
 
+func (e *auditedEngine) UpdateDocumentMetadata(
+	ctx context.Context, knowledgeBaseID, documentID string, meta *DocumentMetadata,
+) error {
+	return e.inner.UpdateDocumentMetadata(ctx, knowledgeBaseID, documentID, meta)
+}
+
 func (e *auditedEngine) ListDocumentIDs(ctx context.Context) ([]string, error) {
 	return e.inner.ListDocumentIDs(ctx)
+}
+
+func (e *auditedEngine) IndexStatus(ctx context.Context) (*IndexStatus, error) {
+	return e.inner.IndexStatus(ctx)
 }
 
 func (e *auditedEngine) emit(

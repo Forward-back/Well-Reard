@@ -209,9 +209,11 @@ import {
   getSystemInfo,
   getParserEngines,
   getRuntimeQueues,
+  getRetrievalIndexStatus,
   listSystemAuditLog,
   listSystemUsers,
   type QueueStat,
+  type RetrievalIndexHealth,
   type SystemInfo,
 } from '@/api/system'
 import { listModels, type ModelConfig } from '@/api/model'
@@ -247,6 +249,8 @@ const storageBackendName = ref('')
 const modelConfigs = ref<ModelConfig[]>([])
 const queues = ref<QueueStat[]>([])
 const queueAvailable = ref(true)
+const indexHealth = ref<RetrievalIndexHealth | null>(null)
+const indexAvailable = ref(true)
 const recentAudit = ref<AuditLog[]>([])
 const actorEmails = ref<Record<string, string>>({})
 const queueTrend = ref<number[]>(Array.from({ length: 12 }, () => 0))
@@ -271,6 +275,12 @@ const modelTone = computed(() => modelCount.value > 0 ? 'success' : 'error')
 const queueTone = computed(() => {
   if (!queueAvailable.value) return 'warn'
   if (queueRetry.value > 0 || queuePending.value >= 10) return 'warn'
+  return 'success'
+})
+const indexStatus = computed(() => indexHealth.value?.data || null)
+const indexWarnings = computed(() => indexHealth.value?.warnings || [])
+const indexTone = computed(() => {
+  if (!indexAvailable.value || indexWarnings.value.length > 0) return 'warn'
   return 'success'
 })
 
@@ -322,6 +332,24 @@ const healthCards = computed(() => [
     value: t('ops.overview.health.queue.count', { pending: queuePending.value, retry: queueRetry.value }),
     description: t('ops.overview.health.queue.description', { archived: queueArchived.value }),
     dependency: t('ops.overview.health.queue.dependency'),
+  },
+  {
+    key: 'index', icon: 'search', tone: indexTone.value,
+    label: t('ops.overview.health.index.title'),
+    status: !indexAvailable.value
+      ? t('ops.overview.health.unavailable')
+      : indexTone.value === 'success' ? t('ops.overview.health.ok') : t('ops.overview.health.warn'),
+    value: indexStatus.value
+      ? t('ops.overview.health.index.count', { vectors: indexStatus.value.vectors })
+      : t('ops.overview.health.unavailable'),
+    description: indexStatus.value
+      ? t('ops.overview.health.index.description', {
+          documents: indexStatus.value.documents,
+          chunks: indexStatus.value.child_chunks,
+          pending: indexStatus.value.pending_chunks,
+        })
+      : t('ops.overview.health.index.dependency'),
+    dependency: t('ops.overview.health.index.dependency'),
   },
 ])
 
@@ -454,6 +482,16 @@ const alerts = computed<OpsAlert[]>(() => {
       actionPath: '/ops/runtime',
     })
   }
+  if (!indexAvailable.value || indexWarnings.value.length > 0) {
+    items.push({
+      id: 'index', priority: 'P2',
+      title: t('ops.overview.alerts.index.title'),
+      detail: t('ops.overview.alerts.index.detail', {
+        detail: indexWarnings.value.length ? indexWarnings.value.join(' / ') : t('ops.overview.health.unavailable'),
+      }),
+      actionPath: '/ops',
+    })
+  }
   const order: Record<AlertPriority, number> = { P1: 0, P2: 1, P3: 2 }
   return items.sort((a, b) => order[a.priority] - order[b.priority])
 })
@@ -562,13 +600,14 @@ const formatBytes = (value: number) => {
 }
 
 const load = async () => {
-  const [infoResult, parserResult, modelsResult, queueResult, auditResult, userResult] = await Promise.allSettled([
+  const [infoResult, parserResult, modelsResult, queueResult, auditResult, userResult, indexResult] = await Promise.allSettled([
     getSystemInfo(),
     getParserEngines(),
     listModels(),
     getRuntimeQueues(),
     listSystemAuditLog({ limit: 6 }),
     listSystemUsers({ limit: 100 }),
+    getRetrievalIndexStatus(),
   ])
   const [storageResult] = await Promise.allSettled([listStorageBackends()])
 
@@ -599,6 +638,12 @@ const load = async () => {
     const map: Record<string, string> = {}
     for (const user of userResult.value.users || []) map[user.id] = user.email || user.username
     actorEmails.value = map
+  }
+  if (indexResult.status === 'fulfilled') {
+    indexHealth.value = indexResult.value
+    indexAvailable.value = Boolean(indexResult.value.data)
+  } else {
+    indexAvailable.value = false
   }
   checkedAt.value = new Date().toLocaleTimeString()
 }

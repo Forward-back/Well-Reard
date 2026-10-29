@@ -1,4 +1,4 @@
-import os, sys, time, logging
+import os, sys, time, logging, tempfile, shutil
 import numpy as np
 import requests
 
@@ -111,6 +111,44 @@ class FAISSSearcher:
             logger.error(f"[FAISS] query embedding 获取失败: {query[:60]}")
             return []
         return self.search_vec(embedding, top_k)
+
+    def add_vectors_atomic(self, embeddings: list) -> int:
+        """在副本上追加向量，落盘后原子替换并切换内存指针。
+
+        读请求始终看到完整索引（不会读到 add 到一半的状态）；旧文件保留为
+        `<index>.prev` 供人工恢复。返回新索引的 base vector_id。
+        """
+        import faiss
+        import numpy as np
+
+        base = self.index.ntotal
+        fd, src_path = tempfile.mkstemp(suffix=".bin")
+        os.close(fd)
+        try:
+            faiss.write_index(self.index, src_path)
+            new_index = faiss.read_index(src_path)
+        finally:
+            if os.path.exists(src_path):
+                os.unlink(src_path)
+        new_index.add(np.array(embeddings, dtype=np.float32))
+        new_index.hnsw.efSearch = HNSW_EF_SEARCH
+
+        # Temp file must live on the same volume as the target; os.replace is
+        # atomic only within one filesystem (the index sits on a bind mount).
+        target_dir = os.path.dirname(self.index_path) or "."
+        fd, dst_path = tempfile.mkstemp(dir=target_dir, suffix=".bin")
+        os.close(fd)
+        try:
+            faiss.write_index(new_index, dst_path)
+            if os.path.exists(self.index_path):
+                shutil.copy2(self.index_path, self.index_path + ".prev")
+            os.replace(dst_path, self.index_path)
+        finally:
+            if os.path.exists(dst_path):
+                os.unlink(dst_path)
+        self.index = new_index
+        logger.info(f"FAISS 原子切换: {base} → {new_index.ntotal} vectors")
+        return base
 
     def search_vec(self, embedding: list, top_k: int = None) -> list[tuple[int, float]]:
         """已嵌向量直接检索（批量嵌入场景：规划器多 step 共用一次 API 调用）。"""

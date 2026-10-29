@@ -7201,6 +7201,12 @@ export default {
           count: '待处理 {pending} · 重试 {retry}',
           description: '归档 {archived} 条历史任务',
           dependency: '依赖 PG · Redis'
+        },
+        index: {
+          title: '知识索引',
+          count: '{vectors} 个向量',
+          description: '文档 {documents} · 分块 {chunks} · 待嵌入 {pending}',
+          dependency: '依赖 YLSW · FAISS'
         }
       },
       queueChart: {
@@ -7284,6 +7290,10 @@ export default {
         archive: {
           title: '归档任务 {count} 条',
           detail: '超过 500 条，可在运行队列页清理归档'
+        },
+        index: {
+          title: '知识索引异常',
+          detail: '{detail}，建议检查 YLSW 索引状态或触发重推'
         }
       },
       recentAudit: {

@@ -174,10 +174,16 @@ func (s *knowledgeService) ProcessMetadataExtract(ctx context.Context, t *asynq.
 			knowledge.ID, countChangedMetadata(&before, &after), len(pending))
 	}
 
-	// 抽取完成后补推 YLSW（§2.14：默认值先推，抽完补更）
+	// 抽取完成后同步 YLSW。生命周期/密级/部门是纯元数据，走原地更新避免重嵌；
+	// 引擎不支持（文档未入库等）时回退整篇重推。
 	if changed && s.ragEngine != nil {
-		if err := s.pushUpdatedToEngine(ctx, payload.TenantID, payload.KnowledgeID, payload.KnowledgeBaseID); err != nil {
-			logger.Warnf(ctx, "metadata extract: re-push engine failed for %s: %v", knowledge.ID, err)
+		if err := s.ragEngine.UpdateDocumentMetadata(
+			ctx, knowledge.KnowledgeBaseID, knowledge.ID, buildEngineDocumentMetadata(&after),
+		); err != nil {
+			logger.Warnf(ctx, "metadata extract: fast metadata update failed for %s, falling back: %v", knowledge.ID, err)
+			if pushErr := s.pushUpdatedToEngine(ctx, payload.TenantID, payload.KnowledgeID, payload.KnowledgeBaseID); pushErr != nil {
+				logger.Warnf(ctx, "metadata extract: re-push engine failed for %s: %v", knowledge.ID, pushErr)
+			}
 		}
 	}
 	return nil

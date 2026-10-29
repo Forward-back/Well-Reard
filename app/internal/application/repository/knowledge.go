@@ -432,6 +432,21 @@ func (r *knowledgeRepository) ListKnowledgeByEngineSyncStatus(
 	return rows, nil
 }
 
+// ListLifecycleScheduled returns documents whose lifecycle can advance by date.
+func (r *knowledgeRepository) ListLifecycleScheduled(ctx context.Context) ([]*types.Knowledge, error) {
+	var rows []*types.Knowledge
+	err := r.db.WithContext(ctx).
+		Where("deleted_at IS NULL").
+		Where("lifecycle_status IN ?", []string{"draft", "effective"}).
+		Where("(COALESCE(effective_date, '') <> '' OR COALESCE(expiry_date, '') <> '')").
+		Order("updated_at ASC").
+		Find(&rows).Error
+	if err != nil {
+		return nil, err
+	}
+	return rows, nil
+}
+
 // CheckKnowledgeExists checks if knowledge already exists
 func (r *knowledgeRepository) CheckKnowledgeExists(
 	ctx context.Context,

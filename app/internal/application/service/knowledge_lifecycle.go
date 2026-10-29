@@ -6,6 +6,7 @@ import (
 	"time"
 
 	werrors "gaze/internal/errors"
+	"gaze/internal/logger"
 	"gaze/internal/types"
 )
 
@@ -80,7 +81,17 @@ func (s *knowledgeService) SetKnowledgeLifecycle(
 			"expiry_date":    record.ExpiryDate,
 			"superseded_by":  record.SupersededBy,
 		})
-	// 状态变化必须尽快反映到检索侧；失败时保留 pending 标记等重推。
-	s.engineSync.ScheduleKnowledgeSync(ctx, record.TenantID, knowledgeID)
+	// 元数据快通道：只改检索侧文档状态，不重切分、不重嵌入，下一次查询立即生效。
+	// 文档尚未推送或引擎不支持原地更新时，回退整篇重推。
+	if s.ragEngine != nil {
+		if err := s.ragEngine.UpdateDocumentMetadata(
+			ctx, kb.ID, knowledgeID, buildEngineDocumentMetadata(record),
+		); err != nil {
+			logger.Warnf(ctx, "[Lifecycle] metadata fast path failed for %s, falling back to re-ingest: %v", knowledgeID, err)
+			s.engineSync.ScheduleKnowledgeSync(ctx, record.TenantID, knowledgeID)
+		}
+	} else {
+		s.engineSync.ScheduleKnowledgeSync(ctx, record.TenantID, knowledgeID)
+	}
 	return record, nil
 }

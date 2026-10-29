@@ -234,3 +234,13 @@ CREATE TABLE IF NOT EXISTS product_mentions (
 -- UPDATE chunks c JOIN documents d ON c.document_id = d.id SET
 --   c.lifecycle_status = d.lifecycle_status, c.effective_date = d.effective_date,
 --   c.expiry_date = d.expiry_date, c.sensitivity = d.sensitivity, c.department = d.department;
+
+-- ============================================================
+-- 10. 分块嵌入缓存（P1 增量索引：相同文本跨版本复用向量，避免整篇重嵌）
+-- ============================================================
+CREATE TABLE IF NOT EXISTS chunk_embedding_cache (
+    text_hash   CHAR(64) PRIMARY KEY COMMENT 'sha256(chunk_text)',
+    dim         INT NOT NULL COMMENT '向量维度',
+    embedding   LONGBLOB NOT NULL COMMENT 'float32 向量字节',
+    updated_at  DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='chunk 文本→向量缓存';

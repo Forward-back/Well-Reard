@@ -2,7 +2,7 @@
 Flask HTTP API 主服务 —— 暴露 POST /query 接口。
 """
 
-import os, sys, re, atexit, logging, threading, time, json, queue, shutil, tempfile
+import os, sys, re, atexit, logging, threading, time, json, queue, shutil, tempfile, hashlib
 from difflib import SequenceMatcher
 from concurrent.futures import ThreadPoolExecutor
 
@@ -1762,6 +1762,52 @@ def _build_app_chunk_matcher(app_chunks: list) -> callable:
     return match
 
 
+def _embedding_key(text: str) -> str:
+    return hashlib.sha256((text or "").strip().encode("utf-8")).hexdigest()
+
+
+def _ensure_embedding_cache(db) -> None:
+    """P1：chunk 文本→向量缓存表（相同文本跨版本复用，避免整篇重嵌）。"""
+    with db.conn.cursor() as cur:
+        cur.execute(
+            "CREATE TABLE IF NOT EXISTS chunk_embedding_cache ("
+            "text_hash CHAR(64) PRIMARY KEY, dim INT NOT NULL, "
+            "embedding LONGBLOB NOT NULL, "
+            "updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP"
+            ") ENGINE=InnoDB DEFAULT CHARSET=utf8mb4"
+        )
+    db.commit()
+
+
+def _load_embedding_cache(db, keys: list[str]) -> dict:
+    if not keys:
+        return {}
+    import numpy as np
+    out = {}
+    with db.conn.cursor() as cur:
+        ph = ",".join(["%s"] * len(keys))
+        cur.execute(
+            f"SELECT text_hash, embedding FROM chunk_embedding_cache WHERE text_hash IN ({ph})",
+            keys,
+        )
+        for text_hash, blob in cur.fetchall():
+            out[text_hash] = np.frombuffer(blob, dtype=np.float32).tolist()
+    return out
+
+
+def _save_embedding_cache(db, pairs: list[tuple[str, list]]) -> None:
+    if not pairs:
+        return
+    import numpy as np
+    with db.conn.cursor() as cur:
+        for text_hash, vector in pairs:
+            cur.execute(
+                "REPLACE INTO chunk_embedding_cache (text_hash, dim, embedding) VALUES (%s,%s,%s)",
+                (text_hash, len(vector), np.asarray(vector, dtype=np.float32).tobytes()),
+            )
+    db.commit()
+
+
 def _ingest_markdown(kb_id: str, doc_uid: str, file_name: str,
                      file_type: str, markdown: str, meta: dict,
                      app_chunks: list = None) -> dict:
@@ -1772,13 +1818,29 @@ def _ingest_markdown(kb_id: str, doc_uid: str, file_name: str,
 
     db = IngestDB()
     match_app_chunk = _build_app_chunk_matcher(app_chunks or [])
+    old_vector_by_hash: dict = {}
     try:
         # 幂等替换：同 source_doc_id 已入库 → 级联删旧重建（FAISS 残留向量靠检索层过滤）
         with db.conn.cursor() as cur:
             cur.execute("SELECT id FROM documents WHERE source_doc_id=%s", (doc_uid,))
             old = cur.fetchone()
         if old:
-            logger.info(f"[ingest] 文档 {doc_uid} 已存在(doc_id={old[0]})，删旧重建")
+            # 增量索引：记录旧文本→vector_id，未变化的 chunk 直接复用旧向量，
+            # 不重嵌也不追加 FAISS。旧 vector_id 必须落在当前索引范围内才可用
+            # （rebuild_faiss 之后 DB id 可能大于 ntotal）。
+            faiss_total = int(faiss_searcher.index.ntotal) if faiss_searcher is not None else 0
+            with db.conn.cursor() as cur:
+                cur.execute(
+                    "SELECT chunk_text, vector_id FROM chunks "
+                    "WHERE document_id=%s AND chunk_level='child' AND vector_id IS NOT NULL",
+                    (old[0],),
+                )
+                for text, vector_id in cur.fetchall():
+                    if vector_id is None or int(vector_id) >= faiss_total:
+                        continue
+                    old_vector_by_hash.setdefault(_embedding_key(text), int(vector_id))
+            logger.info(f"[ingest] 文档 {doc_uid} 已存在(doc_id={old[0]})，删旧重建"
+                        f"（可复用向量 {len(old_vector_by_hash)}）")
             with db.conn.cursor() as cur:
                 cur.execute("DELETE FROM documents WHERE id=%s", (old[0],))
             db.commit()
@@ -1865,32 +1927,58 @@ def _ingest_markdown(kb_id: str, doc_uid: str, file_name: str,
         else:
             logger.warning(f"[ingest] doc_id={doc_id} 无 child chunk，跳过嵌入")
         embedded = 0
+        reused_vectors = 0
+        cache_reused = 0
         if child_texts and faiss_searcher is not None:
-            texts = [t for _, t in child_texts]
-            embs = call_bge_embedding(texts)
-            if embs is not None and len(embs) == len(texts):
+            _ensure_embedding_cache(db)
+            keys = [_embedding_key(t) for _, t in child_texts]
+
+            # ① 未变化的分块直接复用旧 vector_id：不重嵌、不追加索引。
+            reuse_pairs = []
+            used_vectors = set()
+            pending = []
+            for (cid, _), key in zip(child_texts, keys):
+                old_vector = old_vector_by_hash.get(key)
+                if old_vector is not None and old_vector not in used_vectors:
+                    used_vectors.add(old_vector)
+                    reuse_pairs.append((cid, old_vector))
+                else:
+                    pending.append((cid, key))
+            if reuse_pairs:
+                db.batch_update_vector_ids(reuse_pairs)
+                reused_vectors = len(reuse_pairs)
+
+            # ② 变化的分块：先查文本→向量缓存，仍未命中才调用 embedding。
+            cached = _load_embedding_cache(db, list(dict.fromkeys(k for _, k in pending)))
+            missing = [k for k in dict.fromkeys(k for _, k in pending) if k not in cached]
+            fresh_keys: set = set()
+            if missing:
+                key_to_text = {_embedding_key(t): t for _, t in child_texts}
+                embs = call_bge_embedding([key_to_text[k] for k in missing])
+                if embs is not None and len(embs) == len(missing):
+                    fresh = dict(zip(missing, embs))
+                    cached.update(fresh)
+                    fresh_keys = set(fresh)
+                    _save_embedding_cache(db, list(fresh.items()))
+                else:
+                    logger.warning(f"[ingest] doc_id={doc_id} 有 {len(missing)} 个分块嵌入失败，留 pending")
+            cache_reused = sum(1 for _, key in pending if key in cached and key not in fresh_keys)
+
+            # ③ 只为变化分块追加新向量（原子切换索引）。
+            available = [(cid, key) for cid, key in pending if key in cached]
+            if available:
+                vectors = [cached[key] for _, key in available]
                 with _ingest_lock:
-                    import numpy as np
-                    base = faiss_searcher.index.ntotal
-                    vectors = np.array(embs, dtype=np.float32)
-                    faiss_searcher.index.add(vectors)
+                    base = faiss_searcher.add_vectors_atomic(vectors)
                     id_pairs = [
-                        (cid, base + i) for i, (cid, _) in enumerate(child_texts)
+                        (cid, base + i) for i, (cid, _) in enumerate(available)
                     ]
                     db.batch_update_vector_ids(id_pairs)
-                    tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".bin")
-                    tmp_path = tmp.name
-                    tmp.close()
-                    try:
-                        faiss.write_index(faiss_searcher.index, tmp_path)
-                        shutil.copy2(tmp_path, faiss_searcher.index_path)
-                    finally:
-                        if os.path.exists(tmp_path):
-                            os.unlink(tmp_path)
                 embedded = len(id_pairs)
-                logger.info(f"[ingest] doc_id={doc_id} FAISS 追加 {embedded} 向量")
-            else:
-                logger.warning(f"[ingest] doc_id={doc_id} 嵌入失败，chunks 留 pending 待 rebuild")
+            logger.info(
+                f"[ingest] doc_id={doc_id} 向量：旧向量复用 {reused_vectors}，"
+                f"缓存复用 {cache_reused}，新嵌 {len(fresh_keys)}，追加 {embedded}"
+            )
 
         db.update_document_status(doc_id, "success", chunk_count=len(chunks))
         db.insert_parse_log(doc_id, "done", "success", "入库完成")
@@ -2098,6 +2186,62 @@ def handle_delete_document():
     return jsonify({"deleted": 1, "document_id": doc_uid})
 
 
+@app.route("/update_metadata", methods=["POST"])
+def handle_update_metadata():
+    """文档元数据原地更新：生命周期/密级/部门变化不重切分、不重嵌入。
+
+    只改 documents 行并同步内存镜像，下一次查询立即按新状态过滤；
+    文档不存在返回 updated=0，app 侧回退整篇重推。
+    """
+    body = request.get_json(silent=True) or {}
+    doc_uid = str(body.get("document_id") or "").strip()
+    if not doc_uid:
+        return jsonify({"error": "document_id 必填"}), 400
+    life = _lifecycle_fields(body)
+
+    from ingest.pipeline import DB as IngestDB
+    db = IngestDB()
+    doc_id = None
+    try:
+        with db.conn.cursor() as cur:
+            cur.execute("SELECT id FROM documents WHERE source_doc_id=%s", (doc_uid,))
+            row = cur.fetchone()
+            if not row:
+                return jsonify({"updated": 0, "document_id": doc_uid})
+            doc_id = row[0]
+            cur.execute(
+                "UPDATE documents SET lifecycle_status=%s, effective_date=%s, "
+                "expiry_date=%s, superseded_by=%s, sensitivity=%s, department=%s "
+                "WHERE id=%s",
+                (
+                    life["lifecycle_status"], life["effective_date"] or None,
+                    life["expiry_date"] or None, life["superseded_by"] or None,
+                    life["sensitivity"], life["department"] or None, doc_id,
+                ),
+            )
+        db.commit()
+        logger.info(
+            f"[update_metadata] doc={doc_uid} (doc_id={doc_id}) "
+            f"lifecycle={life['lifecycle_status']} sensitivity={life['sensitivity']}"
+        )
+    finally:
+        db.close()
+
+    with _ingest_lock:
+        if chunk_store is not None and chunk_store.doc_meta(doc_id):
+            chunk_store.patch_doc_meta(
+                doc_id,
+                lifecycle_status=life["lifecycle_status"],
+                effective_date=life["effective_date"],
+                expiry_date=life["expiry_date"],
+                sensitivity=life["sensitivity"],
+                department=life["department"],
+            )
+        else:
+            _reload_memory_state()
+    return jsonify({"updated": 1, "document_id": doc_uid})
+
+
 @app.route("/documents/ids", methods=["GET"])
 def handle_document_ids():
     """对账用(§2.2 ③)：返回全部 source_doc_id（即 app 侧 document_id 镜像）。"""
@@ -2110,6 +2254,50 @@ def handle_document_ids():
     finally:
         db.close()
     return jsonify({"ids": ids})
+
+
+@app.route("/index/status", methods=["GET"])
+def handle_index_status():
+    """索引健康（运维看板）：向量数、分块数、待嵌/失败、索引文件新鲜度。"""
+    info = {
+        "status": "ok", "vectors": 0, "documents": 0, "child_chunks": 0,
+        "pending_chunks": 0, "failed_chunks": 0,
+        "index_path": "", "file_size": 0, "file_updated_at": "",
+        "previous_index": False,
+    }
+    if faiss_searcher is not None:
+        info["vectors"] = int(faiss_searcher.index.ntotal)
+        path = faiss_searcher.index_path
+        info["index_path"] = os.path.basename(path)
+        if os.path.exists(path):
+            st = os.stat(path)
+            info["file_size"] = st.st_size
+            info["file_updated_at"] = time.strftime(
+                "%Y-%m-%dT%H:%M:%S", time.localtime(st.st_mtime)
+            )
+            info["previous_index"] = os.path.exists(path + ".prev")
+    try:
+        conn = db_pool.connection()
+        try:
+            with conn.cursor() as cur:
+                cur.execute("SELECT COUNT(*) FROM documents")
+                info["documents"] = int(cur.fetchone()[0])
+                cur.execute("SELECT COUNT(*) FROM chunks WHERE chunk_level='child'")
+                info["child_chunks"] = int(cur.fetchone()[0])
+                cur.execute(
+                    "SELECT COUNT(*) FROM chunks WHERE chunk_level='child' AND status='pending'"
+                )
+                info["pending_chunks"] = int(cur.fetchone()[0])
+                cur.execute(
+                    "SELECT COUNT(*) FROM chunks WHERE chunk_level='child' AND status='failed'"
+                )
+                info["failed_chunks"] = int(cur.fetchone()[0])
+        finally:
+            conn.close()
+    except Exception as exc:
+        info["status"] = "degraded"
+        info["error"] = str(exc)
+    return jsonify(info)
 
 
 @app.route("/health", methods=["GET"])

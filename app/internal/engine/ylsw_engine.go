@@ -499,6 +499,63 @@ func (e *ylswEngine) DeleteDocument(ctx context.Context, documentID string) erro
 	return nil
 }
 
+// UpdateDocumentMetadata updates document-level metadata in place. It is the
+// cheap path for lifecycle/sensitivity/department changes: no re-chunking, no
+// re-embedding, and the engine patches its in-memory doc metadata so the next
+// query sees the new status.
+func (e *ylswEngine) UpdateDocumentMetadata(
+	ctx context.Context, knowledgeBaseID, documentID string, meta *DocumentMetadata,
+) error {
+	baseURL := YLSWBaseURL()
+	if baseURL == "" {
+		return fmt.Errorf("YLSW_BASE_URL is not configured")
+	}
+	payloadMap := map[string]any{
+		"document_id":       documentID,
+		"knowledge_base_id": knowledgeBaseID,
+	}
+	if meta != nil {
+		payloadMap["lifecycle_status"] = meta.LifecycleStatus
+		payloadMap["effective_date"] = meta.EffectiveDate
+		payloadMap["expiry_date"] = meta.ExpiryDate
+		payloadMap["superseded_by"] = meta.SupersededBy
+		payloadMap["sensitivity"] = meta.Sensitivity
+		payloadMap["department"] = meta.Department
+	}
+	payload, err := json.Marshal(payloadMap)
+	if err != nil {
+		return fmt.Errorf("marshal metadata request: %w", err)
+	}
+
+	req, err := http.NewRequestWithContext(
+		ctx, http.MethodPost, baseURL+"/update_metadata", bytes.NewReader(payload),
+	)
+	if err != nil {
+		return fmt.Errorf("build metadata request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	applyEngineToken(req)
+
+	client := &http.Client{Timeout: 30 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		return fmt.Errorf("call YLSW metadata update: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 2048))
+		return fmt.Errorf("YLSW metadata update returned %d: %s", resp.StatusCode, string(respBody))
+	}
+	var out struct {
+		Updated int `json:"updated"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&out); err == nil && out.Updated == 0 {
+		return fmt.Errorf("YLSW metadata update: document not found")
+	}
+	return nil
+}
+
 // firstOrEmpty returns the first non-empty element (legacy single-value
 // parameter kept for the YLSW side's backward compatibility).
 func firstOrEmpty(ids []string) string {
@@ -512,6 +569,33 @@ func firstOrEmpty(ids []string) string {
 
 // ListDocumentIDs returns all document IDs stored in the engine via
 // GET /documents/ids (§2.2 ③ reconciliation).
+func (e *ylswEngine) IndexStatus(ctx context.Context) (*IndexStatus, error) {
+	baseURL := YLSWBaseURL()
+	if baseURL == "" {
+		return nil, fmt.Errorf("YLSW_BASE_URL is not configured")
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, baseURL+"/index/status", nil)
+	if err != nil {
+		return nil, fmt.Errorf("build index status request: %w", err)
+	}
+	applyEngineToken(req)
+	client := &http.Client{Timeout: 30 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("call YLSW index status: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 2048))
+		return nil, fmt.Errorf("YLSW index status returned %d: %s", resp.StatusCode, string(body))
+	}
+	var out IndexStatus
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		return nil, fmt.Errorf("decode YLSW index status: %w", err)
+	}
+	return &out, nil
+}
+
 func (e *ylswEngine) ListDocumentIDs(ctx context.Context) ([]string, error) {
 	baseURL := YLSWBaseURL()
 	if baseURL == "" {

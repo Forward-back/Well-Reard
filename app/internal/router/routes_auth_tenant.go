@@ -312,6 +312,17 @@ func RegisterSystemAdminRoutes(
 		g.apiKeyRoute(adminRoutes, http.MethodDelete, "/runtime/queues/:queue/archived",
 			apiKeyPlatform(types.APIKeyCapabilitySystemRuntimeManage), handler.PurgeArchivedRuntimeTasks)
 
+		// Retrieval index health: vector/chunk counts, pending embeddings and
+		// index file freshness for the ops overview card.
+		g.apiKeyRoute(adminRoutes, http.MethodGet, "/index-status",
+			apiKeyPlatform(types.APIKeyCapabilitySystemRuntimeRead, types.APIKeyCapabilitySystemRuntimeManage),
+			handler.GetIndexStatus)
+
+		// Manual run of the date-based lifecycle sweep (draft→effective→expired).
+		g.apiKeyRoute(adminRoutes, http.MethodPost, "/lifecycle-sweep",
+			apiKeyPlatform(types.APIKeyCapabilitySystemRuntimeManage),
+			handler.RunLifecycleSweep)
+
 		// Bulk action — write the current default-quota setting onto
 		// every existing tenant. Lives under /tenants instead of
 		// /settings because it changes tenants, not the setting row.

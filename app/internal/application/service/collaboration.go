@@ -1358,7 +1358,7 @@ func (s *collaborationService) MergeDocChangeRequest(
 		return nil, err
 	}
 	// 合并即发布：立即把新内容推进检索侧，不等管理员手动重推。
-	s.engineSync.ScheduleKnowledgeSync(ctx, kb.TenantID, cr.KnowledgeID)
+	s.engineSync.PublishKnowledgeChange(ctx, kb.TenantID, cr.KnowledgeID)
 	return s.GetDocChangeRequest(ctx, kb.ID, cr.ID)
 }
 

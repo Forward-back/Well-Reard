@@ -20,6 +20,7 @@ import (
 	"gaze/internal/application/service/file"
 	"gaze/internal/config"
 	"gaze/internal/database"
+	"gaze/internal/engine"
 	apperrors "gaze/internal/errors"
 	"gaze/internal/infrastructure/docparser"
 	"gaze/internal/logger"
@@ -65,6 +66,10 @@ type SystemHandler struct {
 	// reconcileSvc backs the Admin-triggered YLSW dual-write reconciliation
 	// sweep (POST /system/ylsw-reconcile). Always provided by the container.
 	reconcileSvc *service.YLSWReconcileService
+	// ragEngine reports retrieval index health for the ops dashboard.
+	ragEngine engine.RAGEngine
+	// engineSyncSvc backs the manual lifecycle date sweep.
+	engineSyncSvc *service.EngineSyncService
 	// startup snapshot for GET /system/capabilities; bound in router.NewRouter.
 	deploymentCapabilities DeploymentCapabilitiesData
 }
@@ -82,6 +87,8 @@ func NewSystemHandler(cfg *config.Config,
 	storageBackendRepo interfaces.StorageBackendRepository,
 	sandboxConfigSvc *service.TenantSandboxConfigService,
 	reconcileSvc *service.YLSWReconcileService,
+	ragEngine engine.RAGEngine,
+	engineSyncSvc *service.EngineSyncService,
 ) *SystemHandler {
 	return &SystemHandler{
 		cfg:                cfg,
@@ -96,6 +103,8 @@ func NewSystemHandler(cfg *config.Config,
 		storageBackendRepo: storageBackendRepo,
 		sandboxConfigSvc:   sandboxConfigSvc,
 		reconcileSvc:       reconcileSvc,
+		ragEngine:          ragEngine,
+		engineSyncSvc:      engineSyncSvc,
 	}
 }
 
@@ -2184,4 +2193,55 @@ func (h *SystemHandler) ResetSystemSetting(c *gin.Context) {
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"success": true})
+}
+
+// GetIndexStatus reports YLSW retrieval-index health for the ops dashboard.
+// The engine is authoritative; the handler only derives operator-facing
+// warnings so the UI does not have to know threshold policy.
+func (h *SystemHandler) GetIndexStatus(c *gin.Context) {
+	ctx := c.Request.Context()
+	if h.ragEngine == nil {
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "retrieval engine is not configured"})
+		return
+	}
+	status, err := h.ragEngine.IndexStatus(ctx)
+	if err != nil {
+		logger.Warnf(ctx, "index status probe failed: %v", err)
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "retrieval index is unavailable"})
+		return
+	}
+	warnings := make([]string, 0, 4)
+	if status.Status != "" && status.Status != "ok" {
+		warnings = append(warnings, "索引服务降级")
+	}
+	if status.Vectors == 0 && status.Documents > 0 {
+		warnings = append(warnings, "索引为空")
+	}
+	if status.ChildChunks > 0 && status.Vectors < int64(status.ChildChunks) {
+		warnings = append(warnings, fmt.Sprintf("向量覆盖不足 %d/%d", status.Vectors, status.ChildChunks))
+	}
+	if status.PendingChunks > 50 {
+		warnings = append(warnings, fmt.Sprintf("%d 个分块待嵌入", status.PendingChunks))
+	}
+	if status.FailedChunks > 0 {
+		warnings = append(warnings, fmt.Sprintf("%d 个分块嵌入失败", status.FailedChunks))
+	}
+	c.JSON(http.StatusOK, gin.H{"data": status, "warnings": warnings})
+}
+
+// RunLifecycleSweep triggers the date-based lifecycle transition immediately.
+// The daily cron runs the same code at 03:15; this endpoint exists for ops to
+// verify or catch up without waiting for the next window.
+func (h *SystemHandler) RunLifecycleSweep(c *gin.Context) {
+	ctx := c.Request.Context()
+	if h.engineSyncSvc == nil {
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "lifecycle scheduler is not configured"})
+		return
+	}
+	changed, err := h.engineSyncSvc.RunLifecycleSweep(ctx)
+	if err != nil {
+		c.Error(apperrors.NewInternalServerError("lifecycle sweep failed").WithDetails(err.Error()))
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"success": true, "changed": changed})
 }

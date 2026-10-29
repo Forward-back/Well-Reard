@@ -123,8 +123,36 @@ type RAGEngine interface {
 	// DeleteDocument removes a previously ingested document from the engine.
 	DeleteDocument(ctx context.Context, documentID string) error
 
+	// UpdateDocumentMetadata refreshes document-level metadata (lifecycle,
+	// sensitivity, department) in place. Unlike IngestDocument it neither
+	// re-chunks nor re-embeds, so governance changes take effect immediately
+	// and cost nothing. Engines that cannot update in place may return an
+	// error; callers fall back to a full re-push.
+	UpdateDocumentMetadata(
+		ctx context.Context, knowledgeBaseID, documentID string, meta *DocumentMetadata,
+	) error
+
 	// ListDocumentIDs returns every document ID currently stored in the
 	// engine (app-side document UUIDs). Backs the daily dual-write
 	// reconciliation (§2.2 ③).
 	ListDocumentIDs(ctx context.Context) ([]string, error)
+
+	// IndexStatus reports retrieval index health (vector count, chunk counts,
+	// pending/failed embeddings, index file freshness) for the ops dashboard.
+	IndexStatus(ctx context.Context) (*IndexStatus, error)
+}
+
+// IndexStatus mirrors the engine's /index/status payload.
+type IndexStatus struct {
+	Status        string `json:"status"`
+	Vectors       int64  `json:"vectors"`
+	Documents     int    `json:"documents"`
+	ChildChunks   int    `json:"child_chunks"`
+	PendingChunks int    `json:"pending_chunks"`
+	FailedChunks  int    `json:"failed_chunks"`
+	IndexPath     string `json:"index_path"`
+	FileSize      int64  `json:"file_size"`
+	FileUpdatedAt string `json:"file_updated_at"`
+	PreviousIndex bool   `json:"previous_index"`
+	Error         string `json:"error,omitempty"`
 }
